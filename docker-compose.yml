@@ -1,0 +1,60 @@
+services:
+  mysql_billpay:
+    image: mysql:8.4
+    container_name: billpay-mysql-db
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: billpay_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3307:3306"
+    volumes:
+      - billpay_db_data:/var/lib/mysql
+      - ./src/database/01-tables.sql:/docker-entrypoint-initdb.d/01-tables.sql
+      - ./src/database/02-seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uuser", "-ppassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  billpay_backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: billpay-backend
+    restart: on-failure
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      mysql_billpay:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./.env.development.local
+    environment:
+      NODE_NO_WARNINGS: "1"
+      DB_HOST: mysql_billpay
+      DB_PORT: 3306
+      DB_NAME: billpay_db
+      DB_USER: user
+      DB_PASSWORD: password
+    volumes:
+      - ./src:/app/src
+      - ./logs:/app/logs
+    command: ["npm", "run", "dev"]
+
+volumes:
+  billpay_db_data:
