@@ -2,42 +2,96 @@
 -- Auto-executed by MySQL Docker container on first boot
 
 CREATE TABLE IF NOT EXISTS users (
-  id            INT AUTO_INCREMENT PRIMARY KEY,
-  name          VARCHAR(150) NOT NULL,
-  email         VARCHAR(255) NOT NULL UNIQUE,
-  password_hash VARCHAR(255) NOT NULL,
-  phone         VARCHAR(20),
-  role          ENUM('user', 'admin') NOT NULL DEFAULT 'user',
-  wallet_balance DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
-  is_active     BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  name            VARCHAR(150),
+  email           VARCHAR(255),
+  phone           VARCHAR(20) NOT NULL UNIQUE,
+  gender          ENUM('male', 'female', 'other'),
+  role            ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+  upi_id          VARCHAR(255),                         -- stored on first withdrawal
+  wallet_balance  DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  is_onboarded    BOOLEAN NOT NULL DEFAULT FALSE,        -- false until onboarding form completed
+  is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+  pity_counter    INT NOT NULL DEFAULT 0,               -- tracks uploads since last bonus reward
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS bills (
-  id              INT AUTO_INCREMENT PRIMARY KEY,
-  user_id         INT NOT NULL,
-  image_url       VARCHAR(500) NOT NULL,
-  platform        VARCHAR(100),
-  order_id        VARCHAR(255),
-  total_amount    DECIMAL(10, 2),
-  bill_date       DATE,
-  status          ENUM('pending', 'verified', 'rejected') NOT NULL DEFAULT 'pending',
+  id               INT AUTO_INCREMENT PRIMARY KEY,
+  user_id          INT NOT NULL,
+  file_url         VARCHAR(500),                        -- NULL for failed bills (never stored if pipeline fails)
+  image_hash       VARCHAR(64),                         -- perceptual hash for duplicate detection
+  platform         VARCHAR(100),                        -- swiggy / zomato / zepto
+  order_id         VARCHAR(255),
+  total_amount     DECIMAL(10, 2),
+  bill_date        DATE,
+  status           ENUM('pending', 'processing', 'verified', 'rejected', 'failed') NOT NULL DEFAULT 'pending',
   rejection_reason VARCHAR(500),
-  extracted_data  JSON,
-  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  extracted_data   JSON,                                -- raw structured output from AI
+  reward_amount    DECIMAL(10, 2),                      -- amount assigned by reward engine (before claim)
+  reward_claimed   BOOLEAN NOT NULL DEFAULT FALSE,      -- true after user opens chest and claims
+  chest_opened     BOOLEAN NOT NULL DEFAULT FALSE,      -- true after user opens the chest UI
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS cashback_transactions (
   id          INT AUTO_INCREMENT PRIMARY KEY,
   user_id     INT NOT NULL,
-  bill_id     INT NOT NULL,
+  bill_id     INT,                                      -- nullable for manual admin credits/debits
   amount      DECIMAL(10, 2) NOT NULL,
   type        ENUM('credit', 'debit') NOT NULL DEFAULT 'credit',
   description VARCHAR(500),
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id),
   FOREIGN KEY (bill_id) REFERENCES bills(id)
+);
+
+CREATE TABLE IF NOT EXISTS withdrawal_requests (
+  id           INT AUTO_INCREMENT PRIMARY KEY,
+  user_id      INT NOT NULL,
+  amount       DECIMAL(10, 2) NOT NULL,
+  upi_id       VARCHAR(255) NOT NULL,
+  status       ENUM('pending', 'processed', 'rejected') NOT NULL DEFAULT 'pending',
+  admin_note   VARCHAR(500),
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+  id            INT AUTO_INCREMENT PRIMARY KEY,
+  user_id       INT NOT NULL,
+  bill_id       INT,                                    -- nullable (not all tickets are bill disputes)
+  category      ENUM('bill_dispute', 'reward_issue', 'withdrawal_issue', 'other') NOT NULL,
+  description   TEXT NOT NULL,
+  attachment_url VARCHAR(500),                          -- optional screenshot upload
+  status        ENUM('open', 'in_review', 'resolved', 'rejected') NOT NULL DEFAULT 'open',
+  admin_comment TEXT,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (bill_id) REFERENCES bills(id)
+);
+
+CREATE TABLE IF NOT EXISTS reward_config (
+  id          INT AUTO_INCREMENT PRIMARY KEY,
+  tier_name   VARCHAR(50) NOT NULL,                    -- base / medium / high / jackpot
+  reward_min  DECIMAL(10, 2) NOT NULL,
+  reward_max  DECIMAL(10, 2) NOT NULL,
+  weight      INT NOT NULL,                            -- higher = more common
+  is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS upload_limits (
+  id           INT AUTO_INCREMENT PRIMARY KEY,
+  daily_limit  INT NOT NULL DEFAULT 3,
+  weekly_limit INT NOT NULL DEFAULT 10,
+  monthly_limit INT NOT NULL DEFAULT 30,
+  pity_cap     INT NOT NULL DEFAULT 15,                -- every Nth upload guaranteed bonus tier
+  updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
