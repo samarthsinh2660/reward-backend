@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS users (
   is_onboarded    BOOLEAN NOT NULL DEFAULT FALSE,        -- false until onboarding form completed
   is_active       BOOLEAN NOT NULL DEFAULT TRUE,
   pity_counter    INT NOT NULL DEFAULT 0,               -- tracks uploads since last bonus reward
+  referral_code   VARCHAR(20) UNIQUE,                   -- generated on onboarding, shared by user
+  referred_by     VARCHAR(20),                          -- referral code of the user who referred them
+  coin_balance    INT NOT NULL DEFAULT 0,               -- separate from wallet; earned via referrals
   created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -74,6 +77,16 @@ CREATE TABLE IF NOT EXISTS tickets (
   updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id),
   FOREIGN KEY (bill_id) REFERENCES bills(id)
+);
+
+CREATE TABLE IF NOT EXISTS referral_transactions (
+  id               INT AUTO_INCREMENT PRIMARY KEY,
+  referrer_user_id INT NOT NULL,                        -- user who shared their referral code
+  referred_user_id INT NOT NULL,                        -- new user who used the code
+  coins_awarded    INT NOT NULL,                        -- coins credited to referrer
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (referrer_user_id) REFERENCES users(id),
+  FOREIGN KEY (referred_user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS reward_config (

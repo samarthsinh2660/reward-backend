@@ -26,6 +26,32 @@ services:
       retries: 5
       start_period: 30s
 
+  bill_processor:
+    build:
+      context: ../bill-processor
+      dockerfile: Dockerfile
+    container_name: billpay-bill-processor
+    restart: on-failure
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "8000:8000"
+    environment:
+      GOOGLE_VISION_CREDENTIALS: /app/credentials/vision.json
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - ../bill-processor:/app
+      - ./credentials:/app/credentials   # Google Vision service account JSON
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
   billpay_backend:
     build:
       context: .
@@ -40,6 +66,8 @@ services:
     depends_on:
       mysql_billpay:
         condition: service_healthy
+      bill_processor:
+        condition: service_healthy
     ports:
       - "3000:3000"
     env_file:
@@ -51,6 +79,7 @@ services:
       DB_NAME: billpay_db
       DB_USER: user
       DB_PASSWORD: password
+      BILL_PROCESSOR_URL: http://bill_processor:8000
     volumes:
       - ./src:/app/src
       - ./logs:/app/logs
