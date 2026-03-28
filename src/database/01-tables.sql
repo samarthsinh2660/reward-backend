@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
   phone           VARCHAR(20) NOT NULL UNIQUE,
   gender          ENUM('male', 'female', 'other'),
   role            ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+  password_hash   VARCHAR(255),                         -- only set for admin accounts
   upi_id          VARCHAR(255),                         -- stored on first withdrawal
   wallet_balance  DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
   is_onboarded    BOOLEAN NOT NULL DEFAULT FALSE,        -- false until onboarding form completed

@@ -2,9 +2,9 @@
 -- Auto-executed by MySQL Docker container on first boot
 -- Uses INSERT IGNORE to be idempotent
 
--- Admin user (phone-only auth — no password)
-INSERT IGNORE INTO users (id, name, email, phone, role, is_onboarded) VALUES
-(1, 'Admin', 'admin@billpay.com', '9999999999', 'admin', TRUE);
+-- Admin user (default password: Admin@123 — change after first login)
+INSERT IGNORE INTO users (id, name, email, phone, role, is_onboarded, password_hash) VALUES
+(1, 'Admin', 'admin@billpay.com', '9999999999', 'admin', TRUE, '$2b$12$XC1Zirmv9UYbII6Cb66FA.S6brBTj.Q4zo7ZBmxlZS/O6BmqUl84.');
 
 -- Default reward tiers (admin can update via dashboard)
 INSERT IGNORE INTO reward_config (id, tier_name, reward_min, reward_max, weight) VALUES

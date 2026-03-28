@@ -1,37 +1,36 @@
-interface PaginatedData<T> {
-    data: T[];
-    pagination: {
-        hasNext: boolean;
-        nextCursor: number;
-    };
-}
+import { Paginated } from '../types/pagination.ts';
 
-function isPaginated<T>(value: unknown): value is PaginatedData<T> {
+function isPaginated<T>(data: unknown): data is Paginated<T> {
     return (
-        typeof value === 'object' &&
-        value !== null &&
-        'data' in value &&
-        'pagination' in value
+        typeof data === 'object' &&
+        data !== null &&
+        'data' in data &&
+        'pagination' in data
     );
 }
 
-export const successResponse = <T>(data: T, message: string) => {
-    const base = {
+export function successResponse<T>(data: T | Paginated<T>, message?: string) {
+    if (isPaginated(data)) {
+        return {
+            success: true,
+            message: message ?? 'Operation successful',
+            data: data.data,
+            pagination: data.pagination,
+            timestamp: new Date().toISOString(),
+        };
+    }
+    return {
         success: true,
-        message,
+        message: message ?? 'Operation successful',
+        data,
         timestamp: new Date().toISOString(),
     };
+}
 
-    if (isPaginated(data)) {
-        return { ...base, data: data.data, pagination: data.pagination };
-    }
-
-    return { ...base, data };
-};
-
-export const errorResponse = (message: string, statusCode: number = 500) => ({
-    success: false,
-    message,
-    statusCode,
-    timestamp: new Date().toISOString(),
-});
+export function errorResponse(message: string, code: number = 10000) {
+    return {
+        success: false,
+        error: { code, message },
+        timestamp: new Date().toISOString(),
+    };
+}

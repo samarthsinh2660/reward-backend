@@ -29,3 +29,6 @@ export const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN;
 
 // CORS
 export const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+
+// Bill Processor microservice
+export const BILL_PROCESSOR_URL = process.env.BILL_PROCESSOR_URL!;

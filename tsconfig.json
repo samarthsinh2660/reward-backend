@@ -2,7 +2,8 @@
   "compilerOptions": {
     "target": "es2022",
     "module": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
+    "types": ["node", "jest"],
     "strict": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
@@ -13,15 +14,14 @@
     "isolatedModules": true,
     "outDir": "./dist",
     "rootDir": "./src",
-    "baseUrl": "./src",
     "paths": {
-      "@controller/*": ["controller/*"],
-      "@utils/*": ["utils/*"],
-      "@models/*": ["models/*"],
-      "@middleware/*": ["middleware/*"],
-      "@repositories/*": ["repositories/*"],
-      "@services/*": ["services/*"],
-      "@types/*": ["types/*"]
+      "@controller/*": ["./src/controller/*"],
+      "@utils/*": ["./src/utils/*"],
+      "@models/*": ["./src/models/*"],
+      "@middleware/*": ["./src/middleware/*"],
+      "@repositories/*": ["./src/repositories/*"],
+      "@services/*": ["./src/services/*"],
+      "@types/*": ["./src/types/*"]
     }
   },
   "include": ["src/**/*.ts"],
