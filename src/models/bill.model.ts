@@ -4,7 +4,7 @@ export const BILL_TABLE = 'bills';
 
 // ── Enum constants — import these in routes/queries, never hardcode strings ──
 
-export const BILL_STATUSES = ['pending', 'processing', 'verified', 'rejected', 'failed'] as const;
+export const BILL_STATUSES = ['queued', 'pending', 'processing', 'verified', 'rejected', 'failed'] as const;
 export type BillStatus = typeof BILL_STATUSES[number];
 
 export const BILL_PLATFORMS = ['swiggy', 'zomato', 'zepto', 'blinkit', 'unknown'] as const;
@@ -80,6 +80,12 @@ export type BillView = {
 };
 
 // ── Input types ───────────────────────────────────────────────────────────────
+
+// Minimal data needed to create the queued row before background processing starts
+export type QueuedBillData = {
+    user_id: number;
+    sha256_hash: string;
+};
 
 export type CreateBillData = {
     user_id: number;

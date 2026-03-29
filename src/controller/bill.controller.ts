@@ -11,25 +11,36 @@ import { uploadBillImage } from '../services/gcp-storage.service.ts';
 import { drawReward } from './reward.controller.ts';
 import {
     BillView, BillUploadResponse, ChestOpenResponse,
-    BillStatus, toBillView,
+    BillStatus, BillPlatform, BILL_PLATFORMS, toBillView,
 } from '../models/bill.model.ts';
 import { Paginated } from '../types/pagination.ts';
 
 const logger = createLogger('@bill.controller');
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function toPlatform(raw: string | null | undefined): BillPlatform {
+    const value = raw ?? 'unknown';
+    return (BILL_PLATFORMS as readonly string[]).includes(value)
+        ? value as BillPlatform
+        : 'unknown';
+}
 
 // ── Fraud score thresholds (matches wahtisapp.md spec) ────────────────────────
 const FRAUD_AUTO_APPROVE_MAX  = 49;
 const FRAUD_MANUAL_REVIEW_MAX = 80;
 // score > FRAUD_MANUAL_REVIEW_MAX → auto-reject
 
-// ── Bill upload & processing ──────────────────────────────────────────────────
+// ── Phase 1: Accept upload (fast — returns in ~200ms) ─────────────────────────
+// Validates limits + dedup, creates a queued bill row, returns bill_id immediately.
+// The actual processing happens in processBillInBackground().
 
-export const uploadBill = async (
+export const acceptBill = async (
     userId: number,
     file: Express.Multer.File
 ): Promise<Result<BillUploadResponse, RequestError>> => {
 
-    // 1. Check upload limits before calling any external service
+    // 1. Check upload limits before any external call
     const limitsResult = await RewardConfigRepository.getUploadLimits();
     if (limitsResult.isErr()) return err(limitsResult.error);
     const limits = limitsResult.value;
@@ -38,15 +49,9 @@ export const uploadBill = async (
     if (countsResult.isErr()) return err(countsResult.error);
     const counts = countsResult.value;
 
-    if (counts.today >= limits.daily_limit) {
-        return err(ERRORS.BILL_UPLOAD_LIMIT_REACHED);
-    }
-    if (counts.this_week >= limits.weekly_limit) {
-        return err(ERRORS.BILL_UPLOAD_LIMIT_REACHED);
-    }
-    if (counts.this_month >= limits.monthly_limit) {
-        return err(ERRORS.BILL_UPLOAD_LIMIT_REACHED);
-    }
+    if (counts.today >= limits.daily_limit)        return err(ERRORS.BILL_UPLOAD_LIMIT_REACHED);
+    if (counts.this_week >= limits.weekly_limit)    return err(ERRORS.BILL_UPLOAD_LIMIT_REACHED);
+    if (counts.this_month >= limits.monthly_limit)  return err(ERRORS.BILL_UPLOAD_LIMIT_REACHED);
 
     // 2. SHA-256 exact duplicate check (cheapest gate — no external calls)
     const sha256Hash = crypto
@@ -58,187 +63,190 @@ export const uploadBill = async (
     if (dupCheck.isErr()) return err(dupCheck.error);
     if (dupCheck.value) return err(ERRORS.BILL_DUPLICATE);
 
-    // 3. Call FastAPI bill processor
-    const processorResult = await callBillProcessor(
-        file.buffer,
-        file.mimetype,
-        file.originalname
-    );
-    if (!processorResult.ok) return err(processorResult.error);
+    // 3. Create bill row with status='queued' — background worker fills in the rest
+    const queuedBill = await BillRepository.createQueued({ user_id: userId, sha256_hash: sha256Hash });
+    if (queuedBill.isErr()) return err(queuedBill.error);
+
+    return ok({
+        bill_id: queuedBill.value.id,
+        status: 'queued',
+        platform: null,
+        total_amount: null,
+        fraud_score: 0,
+        reward_pending: false,
+        message: 'Bill received. Processing in background — check back shortly.',
+    });
+};
+
+// ── Phase 2: Background processing ───────────────────────────────────────────
+// Runs after the HTTP response is already sent. Calls FastAPI, runs reward engine,
+// uploads to GCP, and updates the bill row to its final status.
+// All errors are logged and written to the bill row — nothing throws.
+
+export async function processBillInBackground(
+    billId: number,
+    userId: number,
+    fileBuffer: Buffer,
+    fileMimetype: string,
+    fileOriginalname: string
+): Promise<void> {
+
+    // Mark as 'processing' so admin/client can distinguish "in queue" vs "being worked on"
+    await BillRepository.updateStatus(billId, 'processing');
+
+    // Fetch upload limits (needed for pity cap)
+    const limitsResult = await RewardConfigRepository.getUploadLimits();
+    if (limitsResult.isErr()) {
+        logger.error(`Bill ${billId}: failed to fetch upload limits`, limitsResult.error);
+        await BillRepository.updateStatus(billId, 'failed', 'Internal error: could not fetch config');
+        return;
+    }
+    const limits = limitsResult.value;
+
+    // Call FastAPI bill processor
+    const processorResult = await callBillProcessor(fileBuffer, fileMimetype, fileOriginalname);
+    if (!processorResult.ok) {
+        logger.error(`Bill ${billId}: processor unavailable`, processorResult.error);
+        await BillRepository.updateStatus(billId, 'failed', 'Bill processor unavailable');
+        return;
+    }
 
     const processorData = processorResult.data;
 
-    // 4. Handle FastAPI pipeline failures — save a failed record for fraud tracking
+    // FastAPI pipeline failure — update row to failed
     if (processorData.status === 'failed') {
-        await BillRepository.create({
-            user_id: userId,
-            file_url: null,     // nothing stored on failure — per spec
-            sha256_hash: sha256Hash,
-            phash: '',
-            platform: 'unknown',
-            order_id: null,
-            total_amount: null,
-            bill_date: null,
-            status: 'failed',
-            rejection_reason: processorData.reason,
-            extracted_data: null,
-            fraud_score: 0,
-            fraud_signals: null,
-            reward_amount: null,
-            chest_decoys: null,
-        });
-
-        const reasonToError: Record<string, RequestError> = {
-            quality_low:  ERRORS.BILL_QUALITY_LOW,
-            ocr_failed:   ERRORS.BILL_OCR_FAILED,
-            parse_failed: ERRORS.BILL_PARSE_FAILED,
-            invalid_file: ERRORS.BILL_INVALID_FILE,
-        };
-        return err(reasonToError[processorData.reason] ?? ERRORS.BILL_PROCESSING_FAILED);
+        await BillRepository.updateStatus(billId, 'failed', processorData.reason);
+        logger.info(`Bill ${billId} failed processing — reason: ${processorData.reason}`);
+        return;
     }
 
     const { extracted_data, phash, fraud_signals } = processorData;
     const fraudScore = fraud_signals.fraud_score;
 
-    // 5. pHash near-duplicate check
+    // pHash near-duplicate check (exclude self — this bill already exists in DB as queued/processing)
     const phashCheck = await BillRepository.findByPhash(phash);
-    if (phashCheck.isErr()) return err(phashCheck.error);
-    if (phashCheck.value) return err(ERRORS.BILL_DUPLICATE);
+    if (phashCheck.isOk() && phashCheck.value && phashCheck.value.id !== billId) {
+        await BillRepository.updateStatus(billId, 'rejected', 'Duplicate bill (visual match)');
+        logger.info(`Bill ${billId} rejected — phash duplicate of bill ${phashCheck.value.id}`);
+        return;
+    }
 
-    // 6. Cross-user duplicate: same order_id + platform from a different user
+    // Cross-user duplicate: same order_id + platform from a different user
     if (extracted_data.order_id && extracted_data.platform) {
         const crossDup = await BillRepository.findByOrderIdAndPlatform(
             extracted_data.order_id,
             extracted_data.platform ?? '',
             userId
         );
-        if (crossDup.isErr()) return err(crossDup.error);
-        if (crossDup.value) return err(ERRORS.BILL_DUPLICATE);
+        if (crossDup.isOk() && crossDup.value) {
+            await BillRepository.updateStatus(billId, 'rejected', 'Duplicate order ID');
+            logger.info(`Bill ${billId} rejected — order_id duplicate`);
+            return;
+        }
     }
 
-    // 7. Determine status based on fraud score
+    // Determine status based on fraud score
     const billStatus: BillStatus =
         fraudScore > FRAUD_MANUAL_REVIEW_MAX ? 'rejected' :
         fraudScore > FRAUD_AUTO_APPROVE_MAX  ? 'pending'  :
         'verified';
 
-    const rejectionReason =
-        fraudScore > FRAUD_MANUAL_REVIEW_MAX
-            ? 'Auto-rejected: high fraud score'
-            : null;
+    const platform = toPlatform(extracted_data.platform);
 
-    // 8. If auto-rejected — save (no image stored, per spec) and return
+    // Auto-rejected — fill in metadata, no image stored
     if (billStatus === 'rejected') {
-        const rejBill = await BillRepository.create({
-            user_id: userId,
-            file_url: null,
-            sha256_hash: sha256Hash,
+        await BillRepository.updateProcessed(billId, {
             phash,
-            platform: (extracted_data.platform ?? 'unknown') as any,
-            order_id: extracted_data.order_id,
-            total_amount: extracted_data.total_amount,
-            bill_date: extracted_data.order_date,
-            status: 'rejected',
-            rejection_reason: rejectionReason,
+            platform,
+            order_id:         extracted_data.order_id,
+            total_amount:     extracted_data.total_amount,
+            bill_date:        extracted_data.order_date,
+            status:           'rejected',
+            rejection_reason: 'Auto-rejected: high fraud score',
             extracted_data,
-            fraud_score: fraudScore,
+            fraud_score:      fraudScore,
             fraud_signals,
-            reward_amount: null,
-            chest_decoys: null,
+            file_url:         null,
+            reward_amount:    null,
+            chest_decoys:     null,
         });
-        if (rejBill.isErr()) return err(rejBill.error);
-
-        return err(ERRORS.BILL_AUTO_REJECTED);
+        logger.info(`Bill ${billId} auto-rejected — fraud score ${fraudScore}`);
+        return;
     }
 
-    // 9. All checks passed — upload image to GCP Cloud Storage (Mumbai)
-    //    Only verified and pending bills reach here. Spec: "nothing stored unless pipeline succeeds."
-    const tempBillId = Date.now(); // placeholder until DB insert; used only for GCS path
-    const uploadResult = await uploadBillImage(file.buffer, userId, tempBillId);
-    if (uploadResult.isErr()) return err(uploadResult.error);
+    // Upload image to GCP (only verified and pending reach here)
+    const uploadResult = await uploadBillImage(fileBuffer, userId);
+    if (uploadResult.isErr()) {
+        logger.error(`Bill ${billId}: GCP upload failed`, uploadResult.error);
+        await BillRepository.updateStatus(billId, 'failed', 'Image upload failed');
+        return;
+    }
     const fileUrl = uploadResult.value.url;
 
-    // 10. For pending (manual review) — save with image URL, no reward yet
+    // Pending (manual review) — save with image, no reward yet
     if (billStatus === 'pending') {
-        const pendingBill = await BillRepository.create({
-            user_id: userId,
-            file_url: fileUrl,
-            sha256_hash: sha256Hash,
+        await BillRepository.updateProcessed(billId, {
             phash,
-            platform: (extracted_data.platform ?? 'unknown') as any,
-            order_id: extracted_data.order_id,
-            total_amount: extracted_data.total_amount,
-            bill_date: extracted_data.order_date,
-            status: 'pending',
+            platform,
+            order_id:         extracted_data.order_id,
+            total_amount:     extracted_data.total_amount,
+            bill_date:        extracted_data.order_date,
+            status:           'pending',
             rejection_reason: null,
             extracted_data,
-            fraud_score: fraudScore,
+            fraud_score:      fraudScore,
             fraud_signals,
-            reward_amount: null,
-            chest_decoys: null,
+            file_url:         fileUrl,
+            reward_amount:    null,
+            chest_decoys:     null,
         });
-        if (pendingBill.isErr()) return err(pendingBill.error);
-
-        return ok({
-            bill_id: pendingBill.value.id,
-            status: 'pending',
-            platform: pendingBill.value.platform,
-            total_amount: pendingBill.value.total_amount,
-            fraud_score: fraudScore,
-            reward_pending: false,
-            message: 'Your bill is under review. You will be notified once it is verified.',
-        });
+        logger.info(`Bill ${billId} queued for manual review — fraud score ${fraudScore}`);
+        return;
     }
 
-    // 11. Verified — run reward engine
+    // Verified — run reward engine
     const tiersResult = await RewardConfigRepository.getActiveTiers();
-    if (tiersResult.isErr()) return err(tiersResult.error);
-    if (tiersResult.value.length === 0) return err(ERRORS.REWARD_CONFIG_NOT_FOUND);
+    if (tiersResult.isErr() || tiersResult.value.length === 0) {
+        logger.error(`Bill ${billId}: reward config missing`);
+        await BillRepository.updateStatus(billId, 'failed', 'Reward config not found');
+        return;
+    }
 
     const userResult = await UserRepository.findById(userId);
-    if (userResult.isErr()) return err(userResult.error);
+    if (userResult.isErr()) {
+        logger.error(`Bill ${billId}: user ${userId} not found`);
+        await BillRepository.updateStatus(billId, 'failed', 'User not found');
+        return;
+    }
 
     const draw = drawReward(tiersResult.value, userResult.value.pity_counter, limits.pity_cap);
 
-    // 12. Save verified bill with image URL + reward
-    const billResult = await BillRepository.create({
-        user_id: userId,
-        file_url: fileUrl,
-        sha256_hash: sha256Hash,
+    await BillRepository.updateProcessed(billId, {
         phash,
-        platform: (extracted_data.platform ?? 'unknown') as any,
-        order_id: extracted_data.order_id,
-        total_amount: extracted_data.total_amount,
-        bill_date: extracted_data.order_date,
-        status: 'verified',
+        platform,
+        order_id:         extracted_data.order_id,
+        total_amount:     extracted_data.total_amount,
+        bill_date:        extracted_data.order_date,
+        status:           'verified',
         rejection_reason: null,
         extracted_data,
-        fraud_score: fraudScore,
+        fraud_score:      fraudScore,
         fraud_signals,
-        reward_amount: draw.amount,
-        chest_decoys: draw.decoys,
+        file_url:         fileUrl,
+        reward_amount:    draw.amount,
+        chest_decoys:     draw.decoys,
     });
-    if (billResult.isErr()) return err(billResult.error);
 
-    // 12. Update pity counter
-    if (draw.pity_triggered) {
-        await UserRepository.resetPityCounter(userId);
-    } else {
-        await UserRepository.incrementPityCounter(userId);
+    // Update pity counter (non-fatal — bill + reward are already saved)
+    const pityResult = draw.pity_triggered
+        ? await UserRepository.resetPityCounter(userId)
+        : await UserRepository.incrementPityCounter(userId);
+    if (pityResult.isErr()) {
+        logger.error(`Bill ${billId}: failed to update pity counter for user ${userId} — counter may be out of sync`, pityResult.error);
     }
 
-    logger.info(`Bill ${billResult.value.id} verified for user ${userId}. Reward: ₹${draw.amount} (${draw.tier_name})`);
-
-    return ok({
-        bill_id: billResult.value.id,
-        status: 'verified',
-        platform: billResult.value.platform,
-        total_amount: billResult.value.total_amount,
-        fraud_score: fraudScore,
-        reward_pending: true,
-        message: 'Bill verified! Open your reward chest.',
-    });
-};
+    logger.info(`Bill ${billId} verified for user ${userId}. Reward: ₹${draw.amount} (${draw.tier_name})`);
+}
 
 // ── List user's bills ─────────────────────────────────────────────────────────
 
@@ -350,7 +358,6 @@ export const adminApproveBill = async (
     if (!bill) return err(ERRORS.BILL_NOT_FOUND);
     if (bill.status !== 'pending') return err(ERRORS.BILL_NOT_VERIFIED);
 
-    // Run reward engine for this bill
     const tiersResult = await RewardConfigRepository.getActiveTiers();
     if (tiersResult.isErr()) return err(tiersResult.error);
     if (tiersResult.value.length === 0) return err(ERRORS.REWARD_CONFIG_NOT_FOUND);
@@ -366,10 +373,12 @@ export const adminApproveBill = async (
     const setResult = await BillRepository.setVerified(billId, draw.amount, draw.decoys);
     if (setResult.isErr()) return err(setResult.error);
 
-    if (draw.pity_triggered) {
-        await UserRepository.resetPityCounter(bill.user_id);
-    } else {
-        await UserRepository.incrementPityCounter(bill.user_id);
+    // Update pity counter (non-fatal — bill is already saved)
+    const pityResult = draw.pity_triggered
+        ? await UserRepository.resetPityCounter(bill.user_id)
+        : await UserRepository.incrementPityCounter(bill.user_id);
+    if (pityResult.isErr()) {
+        logger.error(`Failed to update pity counter for user ${bill.user_id} on admin approve — counter may be out of sync`, pityResult.error);
     }
 
     const updated = await BillRepository.findById(billId);
