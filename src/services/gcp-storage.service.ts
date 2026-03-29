@@ -6,7 +6,7 @@ import { ERRORS, RequestError } from '../utils/error.ts';
 import { createLogger } from '../utils/logger.ts';
 import {
     GCP_STORAGE_BUCKET,
-    GCP_KEY_FILE,
+    GCP_STORAGE_KEY_FILE,
 } from '../config/env.ts';
 
 const logger = createLogger('@gcp-storage.service');
@@ -17,7 +17,7 @@ let _storage: Storage | null = null;
 function getStorage(): Storage {
     if (!_storage) {
         _storage = new Storage({
-            keyFilename: GCP_KEY_FILE,
+            keyFilename: GCP_STORAGE_KEY_FILE,
         });
     }
     return _storage;

@@ -9,6 +9,7 @@ dist/
 
 # ── Credentials (GCP service account keys) ───────────────────────────────────
 bill-processor/credentials/
+credentials/
 
 # ── Python (bill-processor) ───────────────────────────────────────────────────
 __pycache__/

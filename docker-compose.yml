@@ -79,11 +79,11 @@ services:
       DB_USER: user
       DB_PASSWORD: password
       BILL_PROCESSOR_URL: http://bill_processor:8000
-      GCP_KEY_FILE: /app/credentials/vision.json
+      GCP_STORAGE_KEY_FILE: /app/credentials/gcp-storage.json
     volumes:
       - ./src:/app/src
       - ./logs:/app/logs
-      - ./bill-processor/credentials:/app/credentials:ro
+      - ./credentials:/app/credentials:ro   # backend/credentials/gcp-storage.json
     command: ["npm", "run", "dev"]
 
 volumes:
