@@ -247,6 +247,54 @@ describe('UserRepository.onboard', () => {
     });
 });
 
+// ─── onboard (email + gender) ─────────────────────────────────────────────────
+
+describe('UserRepository.onboard (email + gender)', () => {
+    it('stores email when provided', async () => {
+        const result = await UserRepository.onboard(
+            2,
+            { name: 'Bob', email: 'bob@example.com' },
+            'NEWBOB2'
+        );
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) expect(result.value.email).toBe('bob@example.com');
+    });
+
+    it('stores gender when provided', async () => {
+        const result = await UserRepository.onboard(
+            2,
+            { name: 'Bob', gender: 'male' },
+            'NEWBOB2'
+        );
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) expect(result.value.gender).toBe('male');
+    });
+
+    it('leaves email null when not provided', async () => {
+        const result = await UserRepository.onboard(
+            2,
+            { name: 'Bob' },
+            'NEWBOB2'
+        );
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) expect(result.value.email).toBeNull();
+    });
+
+    it('leaves gender null when not provided', async () => {
+        const result = await UserRepository.onboard(
+            2,
+            { name: 'Bob' },
+            'NEWBOB2'
+        );
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) expect(result.value.gender).toBeNull();
+    });
+});
+
 // ─── addCoins ─────────────────────────────────────────────────────────────────
 
 describe('UserRepository.addCoins', () => {
@@ -265,5 +313,62 @@ describe('UserRepository.addCoins', () => {
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) expect(result.value.coin_balance).toBe(80);
+    });
+});
+
+// ─── incrementPityCounter ─────────────────────────────────────────────────────
+
+describe('UserRepository.incrementPityCounter', () => {
+    it('increments pity_counter by 1', async () => {
+        await UserRepository.incrementPityCounter(1);
+        const result = await UserRepository.findById(1);
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) expect(result.value.pity_counter).toBe(1);
+    });
+
+    it('accumulates across multiple increments', async () => {
+        await UserRepository.incrementPityCounter(1);
+        await UserRepository.incrementPityCounter(1);
+        await UserRepository.incrementPityCounter(1);
+        const result = await UserRepository.findById(1);
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) expect(result.value.pity_counter).toBe(3);
+    });
+
+    it('returns ok(undefined)', async () => {
+        const result = await UserRepository.incrementPityCounter(1);
+        expect(result.isOk()).toBe(true);
+    });
+});
+
+// ─── resetPityCounter ─────────────────────────────────────────────────────────
+
+describe('UserRepository.resetPityCounter', () => {
+    it('sets pity_counter to 0', async () => {
+        // First increment a few times
+        await UserRepository.incrementPityCounter(1);
+        await UserRepository.incrementPityCounter(1);
+
+        // Then reset
+        await UserRepository.resetPityCounter(1);
+        const result = await UserRepository.findById(1);
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) expect(result.value.pity_counter).toBe(0);
+    });
+
+    it('is idempotent when counter is already 0', async () => {
+        await UserRepository.resetPityCounter(1);
+        const result = await UserRepository.findById(1);
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) expect(result.value.pity_counter).toBe(0);
+    });
+
+    it('returns ok(undefined)', async () => {
+        const result = await UserRepository.resetPityCounter(1);
+        expect(result.isOk()).toBe(true);
     });
 });

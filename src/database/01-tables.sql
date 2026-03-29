@@ -25,17 +25,21 @@ CREATE TABLE IF NOT EXISTS bills (
   id               INT AUTO_INCREMENT PRIMARY KEY,
   user_id          INT NOT NULL,
   file_url         VARCHAR(500),                        -- NULL for failed bills (never stored if pipeline fails)
-  image_hash       VARCHAR(64),                         -- perceptual hash for duplicate detection
-  platform         VARCHAR(100),                        -- swiggy / zomato / zepto
+  sha256_hash      VARCHAR(64),                         -- SHA-256 of file bytes — exact duplicate gate (checked before FastAPI)
+  phash            VARCHAR(20),                         -- perceptual hash — near-duplicate gate (computed by FastAPI)
+  platform         VARCHAR(100),                        -- swiggy | zomato | zepto | blinkit | unknown
   order_id         VARCHAR(255),
   total_amount     DECIMAL(10, 2),
   bill_date        DATE,
   status           ENUM('pending', 'processing', 'verified', 'rejected', 'failed') NOT NULL DEFAULT 'pending',
   rejection_reason VARCHAR(500),
-  extracted_data   JSON,                                -- raw structured output from AI
+  extracted_data   JSON,                                -- raw structured output from AI (ExtractedBillData)
+  fraud_score      INT NOT NULL DEFAULT 0,              -- total fraud score from bill processor (admin filtering)
+  fraud_signals    JSON,                                -- full fraud signal breakdown (admin review)
   reward_amount    DECIMAL(10, 2),                      -- amount assigned by reward engine (before claim)
-  reward_claimed   BOOLEAN NOT NULL DEFAULT FALSE,      -- true after user opens chest and claims
-  chest_opened     BOOLEAN NOT NULL DEFAULT FALSE,      -- true after user opens the chest UI
+  chest_decoys     JSON,                                -- pre-computed decoy amounts for chest UI [n1, n2]
+  reward_claimed   BOOLEAN NOT NULL DEFAULT FALSE,      -- true after user opens chest and claims reward
+  chest_opened     BOOLEAN NOT NULL DEFAULT FALSE,      -- true after user has viewed the chest opening UI
   created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id)

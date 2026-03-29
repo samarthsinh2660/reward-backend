@@ -32,3 +32,11 @@ export const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
 // Bill Processor microservice
 export const BILL_PROCESSOR_URL = process.env.BILL_PROCESSOR_URL!;
+
+// GCP Cloud Storage — Mumbai (asia-south1), Standard storage
+// Bucket must be pre-created with Standard class in asia-south1 region
+export const GCP_STORAGE_BUCKET = process.env.GCP_STORAGE_BUCKET!;
+export const GCP_KEY_FILE       = process.env.GCP_KEY_FILE!;   // path to service account JSON
+
+// MSG91 (OTP + SMS notifications)
+export const MSG91_AUTH_TOKEN = process.env.MSG91_AUTH_TOKEN!;;

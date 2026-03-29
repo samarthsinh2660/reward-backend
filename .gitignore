@@ -1,28 +1,38 @@
-# Dependencies
+# ── Node ──────────────────────────────────────────────────────────────────────
 node_modules/
-
-# Build output
 dist/
+*.tsbuildinfo
 
-# Environment files (secrets) — never commit
-.env.*
+# ── Environment & Secrets ─────────────────────────────────────────────────────
 .env
-!.env.example
+.env.*
 
-# Logs
+# ── Credentials (GCP service account keys) ───────────────────────────────────
+bill-processor/credentials/
+
+# ── Python (bill-processor) ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+bill-processor/.env
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
 logs/
 *.log
 npm-debug.log*
 
-# OS files
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# Docker data volumes
+# ── Docker data volumes ───────────────────────────────────────────────────────
 mysql_data/

@@ -6,6 +6,7 @@ import { authLimiter } from '../middleware/ratelimit.middleware.ts';
 import { errorHandler } from '../middleware/error.middleware.ts';
 import { successResponse } from '../utils/response.ts';
 import { verifyOtp, onboardUser, getMe, refreshAccessToken } from '../controller/auth.controller.ts';
+import { USER_GENDERS } from '../models/user.model.ts';
 
 const SCHEMA = {
     VERIFY_OTP: z.object({
@@ -13,7 +14,9 @@ const SCHEMA = {
         phone: z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
     }),
     ONBOARD: z.object({
-        name: z.string().min(1).max(150).trim(),
+        name:               z.string().min(1).max(150).trim(),
+        email:              z.string().email().optional(),
+        gender:             z.enum(USER_GENDERS).optional(),
         referral_code_used: z.string().min(1).max(20).optional(),
     }),
     REFRESH: z.object({
@@ -50,7 +53,9 @@ authRouter.post(
     async function (req: Request, res: Response, next: NextFunction) {
         const body: z.infer<typeof SCHEMA.ONBOARD> = req.body;
         const result = await onboardUser(req.user!.id, {
-            name: body.name,
+            name:               body.name,
+            email:              body.email,
+            gender:             body.gender,
             referral_code_used: body.referral_code_used,
         });
         result.match(

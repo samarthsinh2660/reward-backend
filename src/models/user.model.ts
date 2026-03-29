@@ -25,10 +25,16 @@ CREATE TABLE IF NOT EXISTS users (
 )
 `;
 
-export type UserRole = 'user' | 'admin';
-export type UserGender = 'male' | 'female' | 'other';
+// ── Enum constants — import in routes/queries, never hardcode the strings ────
 
-// DB row type — always extends RowDataPacket for mysql2 typing
+export const USER_ROLES = ['user', 'admin'] as const;
+export type UserRole = typeof USER_ROLES[number];
+
+export const USER_GENDERS = ['male', 'female', 'other'] as const;
+export type UserGender = typeof USER_GENDERS[number];
+
+// ── DB row type ───────────────────────────────────────────────────────────────
+
 export interface User extends RowDataPacket {
     id: number;
     name: string | null;
@@ -39,8 +45,8 @@ export interface User extends RowDataPacket {
     password_hash: string | null;   // only set for admin accounts
     upi_id: string | null;
     wallet_balance: number;
-    is_onboarded: number;   // TINYINT comes back as 0/1
-    is_active: number;      // TINYINT comes back as 0/1
+    is_onboarded: number;           // TINYINT — 0 | 1
+    is_active: number;              // TINYINT — 0 | 1
     pity_counter: number;
     referral_code: string | null;
     referred_by: string | null;
@@ -49,7 +55,8 @@ export interface User extends RowDataPacket {
     updated_at: Date;
 }
 
-// Safe view — only fields safe to expose to the client
+// ── Safe view — only fields safe to expose to the client ──────────────────────
+
 export type UserView = {
     id: number;
     name: string | null;
@@ -65,14 +72,17 @@ export type UserView = {
     created_at: Date;
 };
 
-// Input types for repositories and controllers
+// ── Input types ───────────────────────────────────────────────────────────────
+
 export type CreateUserData = {
     phone: string;
 };
 
 export type OnboardUserData = {
     name: string;
-    referral_code_used?: string;   // code entered by the user (their referrer's code)
+    email?: string;
+    gender?: UserGender;
+    referral_code_used?: string;    // the referrer's code, entered during onboarding
 };
 
 export type AdminLoginData = {
@@ -80,7 +90,8 @@ export type AdminLoginData = {
     password: string;
 };
 
-// Converts a raw DB row to the safe client view
+// ── Converter ─────────────────────────────────────────────────────────────────
+
 export function toUserView(row: User): UserView {
     return {
         id: row.id,

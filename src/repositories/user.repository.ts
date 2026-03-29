@@ -3,7 +3,7 @@ import { ResultSetHeader } from 'mysql2/promise';
 import { db } from '../database/db.ts';
 import { ERRORS, RequestError } from '../utils/error.ts';
 import { createLogger } from '../utils/logger.ts';
-import { User, OnboardUserData } from '../models/user.model.ts';
+import { User, OnboardUserData, USER_TABLE } from '../models/user.model.ts';
 
 const logger = createLogger('@user.repository');
 
@@ -15,6 +15,8 @@ export interface IUserRepository {
     create(phone: string): Promise<Result<User, RequestError>>;
     onboard(id: number, data: OnboardUserData, generatedReferralCode: string): Promise<Result<User, RequestError>>;
     addCoins(id: number, coins: number): Promise<Result<void, RequestError>>;
+    incrementPityCounter(id: number): Promise<Result<void, RequestError>>;
+    resetPityCounter(id: number): Promise<Result<void, RequestError>>;
 }
 
 class UserRepositoryImpl implements IUserRepository {
@@ -25,7 +27,7 @@ class UserRepositoryImpl implements IUserRepository {
             const [rows] = await db.query<User[]>(
                 `SELECT id, name, email, phone, gender, role, upi_id, wallet_balance, is_onboarded, is_active,
                         pity_counter, referral_code, referred_by, coin_balance, created_at, updated_at
-                 FROM users WHERE phone = ?`,
+                 FROM ${USER_TABLE} WHERE phone = ?`,
                 [phone]
             );
             return ok(rows.length > 0 ? rows[0] : null);
@@ -42,7 +44,7 @@ class UserRepositoryImpl implements IUserRepository {
                 `SELECT id, name, email, phone, gender, role, password_hash, upi_id, wallet_balance,
                         is_onboarded, is_active, pity_counter, referral_code, referred_by,
                         coin_balance, created_at, updated_at
-                 FROM users WHERE phone = ?`,
+                 FROM ${USER_TABLE} WHERE phone = ?`,
                 [phone]
             );
             return ok(rows.length > 0 ? rows[0] : null);
@@ -57,7 +59,7 @@ class UserRepositoryImpl implements IUserRepository {
             const [rows] = await db.query<User[]>(
                 `SELECT id, name, email, phone, gender, role, upi_id, wallet_balance, is_onboarded, is_active,
                         pity_counter, referral_code, referred_by, coin_balance, created_at, updated_at
-                 FROM users WHERE id = ?`,
+                 FROM ${USER_TABLE} WHERE id = ?`,
                 [id]
             );
             if (rows.length === 0) return err(ERRORS.USER_NOT_FOUND);
@@ -71,7 +73,7 @@ class UserRepositoryImpl implements IUserRepository {
     async findByReferralCode(code: string): Promise<Result<User | null, RequestError>> {
         try {
             const [rows] = await db.query<User[]>(
-                `SELECT id, name, phone, role, referral_code, coin_balance FROM users WHERE referral_code = ?`,
+                `SELECT id, name, phone, role, referral_code, coin_balance FROM ${USER_TABLE} WHERE referral_code = ?`,
                 [code]
             );
             return ok(rows.length > 0 ? rows[0] : null);
@@ -84,7 +86,7 @@ class UserRepositoryImpl implements IUserRepository {
     async create(phone: string): Promise<Result<User, RequestError>> {
         try {
             const [result] = await db.query<ResultSetHeader>(
-                `INSERT INTO users (phone) VALUES (?)`,
+                `INSERT INTO ${USER_TABLE} (phone) VALUES (?)`,
                 [phone]
             );
             return await this.findById(result.insertId);
@@ -94,13 +96,25 @@ class UserRepositoryImpl implements IUserRepository {
         }
     }
 
-    async onboard(id: number, data: OnboardUserData, generatedReferralCode: string): Promise<Result<User, RequestError>> {
+    async onboard(
+        id: number,
+        data: OnboardUserData,
+        generatedReferralCode: string
+    ): Promise<Result<User, RequestError>> {
         try {
             await db.query(
-                `UPDATE users
-                 SET name = ?, is_onboarded = TRUE, referral_code = ?, referred_by = ?
+                `UPDATE ${USER_TABLE}
+                 SET name = ?, email = ?, gender = ?, is_onboarded = TRUE,
+                     referral_code = ?, referred_by = ?
                  WHERE id = ?`,
-                [data.name, generatedReferralCode, data.referral_code_used ?? null, id]
+                [
+                    data.name,
+                    data.email ?? null,
+                    data.gender ?? null,
+                    generatedReferralCode,
+                    data.referral_code_used ?? null,
+                    id,
+                ]
             );
             return await this.findById(id);
         } catch (error) {
@@ -112,12 +126,38 @@ class UserRepositoryImpl implements IUserRepository {
     async addCoins(id: number, coins: number): Promise<Result<void, RequestError>> {
         try {
             await db.query(
-                `UPDATE users SET coin_balance = coin_balance + ? WHERE id = ?`,
+                `UPDATE ${USER_TABLE} SET coin_balance = coin_balance + ? WHERE id = ?`,
                 [coins, id]
             );
             return ok(undefined);
         } catch (error) {
             logger.error('Error adding coins to user', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async incrementPityCounter(id: number): Promise<Result<void, RequestError>> {
+        try {
+            await db.query(
+                `UPDATE ${USER_TABLE} SET pity_counter = pity_counter + 1 WHERE id = ?`,
+                [id]
+            );
+            return ok(undefined);
+        } catch (error) {
+            logger.error('Error incrementing pity counter', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async resetPityCounter(id: number): Promise<Result<void, RequestError>> {
+        try {
+            await db.query(
+                `UPDATE ${USER_TABLE} SET pity_counter = 0 WHERE id = ?`,
+                [id]
+            );
+            return ok(undefined);
+        } catch (error) {
+            logger.error('Error resetting pity counter', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }
