@@ -6,6 +6,7 @@ import { UserView, OnboardUserData, toUserView } from '../models/user.model.ts';
 import { createAuthToken, createRefreshToken, decodeRefreshToken, TokenData } from '../utils/jwt.ts';
 import { LoginResponse } from '../types/login.ts';
 import { createLogger } from '../utils/logger.ts';
+import { verifyMsg91Token } from '../services/msg91.service.ts';
 
 const logger = createLogger('@auth.controller');
 
@@ -21,10 +22,15 @@ function generateReferralCode(userId: number): string {
 }
 
 // Called after MSG91 OTP is verified client-side.
-// Finds or creates the user, returns JWT + user view.
+// Validates the MSG91 access token server-side, then finds or creates the user.
 export const verifyOtp = async (
-    phone: string
+    phone: string,
+    msg91AccessToken: string
 ): Promise<Result<LoginResponse<UserView>, RequestError>> => {
+    // Verify with MSG91 API — rejects if token is forged or already used
+    const tokenValid = await verifyMsg91Token(msg91AccessToken);
+    if (!tokenValid) return err(ERRORS.INVALID_OTP);
+
     // Normalize phone: ensure it has country code prefix stored consistently
     const normalizedPhone = phone.startsWith('+') ? phone.slice(1) : phone;
 

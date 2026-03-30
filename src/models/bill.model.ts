@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS bills (
   order_id         VARCHAR(255),
   total_amount     DECIMAL(10, 2),
   bill_date        DATE,
-  status           ENUM('pending', 'processing', 'verified', 'rejected', 'failed') NOT NULL DEFAULT 'pending',
+  status           ENUM('queued', 'pending', 'processing', 'verified', 'rejected', 'failed') NOT NULL DEFAULT 'queued',
   rejection_reason VARCHAR(500),
   extracted_data   JSON,
   fraud_score      INT NOT NULL DEFAULT 0,

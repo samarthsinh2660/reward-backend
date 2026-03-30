@@ -6,6 +6,8 @@ import { ERRORS } from '../utils/error.ts';
 
 const mockBillRepository = {
     create:                    jest.fn<any>(),
+    createQueued:              jest.fn<any>(),
+    updateProcessed:           jest.fn<any>(),
     findById:                  jest.fn<any>(),
     findByUserId:              jest.fn<any>(),
     findBySha256Hash:          jest.fn<any>(),
@@ -74,8 +76,11 @@ jest.unstable_mockModule('./reward.controller.ts', () => ({
     drawReward: mockDrawReward,
 }));
 
-const { uploadBill, listBills, getBill, openChest, adminListBills, adminApproveBill, adminRejectBill } =
-    await import('./bill.controller.ts');
+const {
+    acceptBill: uploadBill,
+    processBillInBackground,
+    listBills, getBill, openChest, adminListBills, adminApproveBill, adminRejectBill,
+} = await import('./bill.controller.ts');
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -201,11 +206,10 @@ function makeDrawResult(overrides: Record<string, unknown> = {}) {
     };
 }
 
-// Setup default happy-path mocks for uploadBill
-function setupHappyPath() {
+// Happy-path setup for processBillInBackground
+function setupProcessHappy() {
+    mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
     mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-    mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-    mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
     mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess());
     mockBillRepository.findByPhash.mockResolvedValue(ok(null));
     mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(null));
@@ -216,26 +220,33 @@ function setupHappyPath() {
     mockRewardConfigRepository.getActiveTiers.mockResolvedValue(ok(makeActiveTiers()));
     mockUserRepository.findById.mockResolvedValue(ok(makeUser()));
     mockDrawReward.mockReturnValue(makeDrawResult());
-    mockBillRepository.create.mockResolvedValue(ok(makeBillRow()));
+    mockBillRepository.updateProcessed.mockResolvedValue(ok(undefined));
     mockUserRepository.incrementPityCounter.mockResolvedValue(ok(undefined));
     mockUserRepository.resetPityCounter.mockResolvedValue(ok(undefined));
 }
 
-// ─── uploadBill ───────────────────────────────────────────────────────────────
+// ─── acceptBill (phase 1 — sync) ─────────────────────────────────────────────
 
 describe('uploadBill', () => {
     beforeEach(clear);
 
-    it('returns verified upload response on happy path', async () => {
-        setupHappyPath();
+    it('returns queued response and calls createQueued on happy path', async () => {
+        mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
+        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
+        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
+        mockBillRepository.createQueued.mockResolvedValue(ok(makeBillRow({ id: 7, status: 'queued' })));
+
         const result = await uploadBill(10, makeMullerFile());
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) {
-            expect(result.value.status).toBe('verified');
-            expect(result.value.reward_pending).toBe(true);
-            expect(result.value.bill_id).toBe(1);
+            expect(result.value.status).toBe('queued');
+            expect(result.value.bill_id).toBe(7);
+            expect(result.value.reward_pending).toBe(false);
         }
+        expect(mockBillRepository.createQueued).toHaveBeenCalledWith(
+            expect.objectContaining({ user_id: 10 })
+        );
     });
 
     it('returns BILL_UPLOAD_LIMIT_REACHED when daily limit exceeded', async () => {
@@ -277,103 +288,107 @@ describe('uploadBill', () => {
 
         expect(result.isErr()).toBe(true);
         if (result.isErr()) expect(result.error).toBe(ERRORS.BILL_DUPLICATE);
+        expect(mockBillRepository.createQueued).not.toHaveBeenCalled();
     });
 
-    it('returns BILL_QUALITY_LOW when processor returns quality_low failure', async () => {
-        mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
-        mockCallBillProcessor.mockResolvedValue({
-            ok: true,
-            data: { status: 'failed', reason: 'quality_low' },
-        });
-        mockBillRepository.create.mockResolvedValue(ok(makeBillRow({ status: 'failed' })));
+    it('propagates DB error from getUploadLimits', async () => {
+        mockRewardConfigRepository.getUploadLimits.mockResolvedValue(err(ERRORS.DATABASE_ERROR));
 
         const result = await uploadBill(10, makeMullerFile());
 
         expect(result.isErr()).toBe(true);
-        if (result.isErr()) expect(result.error).toBe(ERRORS.BILL_QUALITY_LOW);
-        // Should still save a failed record for fraud tracking
-        expect(mockBillRepository.create).toHaveBeenCalledWith(
-            expect.objectContaining({ status: 'failed', rejection_reason: 'quality_low' })
+        if (result.isErr()) expect(result.error).toBe(ERRORS.DATABASE_ERROR);
+    });
+
+    it('propagates DB error from createQueued', async () => {
+        mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
+        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
+        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
+        mockBillRepository.createQueued.mockResolvedValue(err(ERRORS.DATABASE_ERROR));
+
+        const result = await uploadBill(10, makeMullerFile());
+
+        expect(result.isErr()).toBe(true);
+        if (result.isErr()) expect(result.error).toBe(ERRORS.DATABASE_ERROR);
+    });
+});
+
+// ─── processBillInBackground (phase 2 — async) ───────────────────────────────
+
+describe('processBillInBackground', () => {
+    const FILE = Buffer.from('fake-image-data');
+    beforeEach(clear);
+
+    it('marks bill as verified and calls updateProcessed on happy path', async () => {
+        setupProcessHappy();
+
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
+
+        expect(mockBillRepository.updateStatus).toHaveBeenCalledWith(1, 'processing');
+        expect(mockBillRepository.updateProcessed).toHaveBeenCalledWith(
+            1, expect.objectContaining({ status: 'verified', reward_amount: 15.50 })
         );
     });
 
-    it('returns BILL_OCR_FAILED when processor returns ocr_failed', async () => {
+    it('marks failed when processor is unavailable', async () => {
+        mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
         mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
-        mockCallBillProcessor.mockResolvedValue({
-            ok: true,
-            data: { status: 'failed', reason: 'ocr_failed' },
-        });
-        mockBillRepository.create.mockResolvedValue(ok(makeBillRow({ status: 'failed' })));
-
-        const result = await uploadBill(10, makeMullerFile());
-
-        expect(result.isErr()).toBe(true);
-        if (result.isErr()) expect(result.error).toBe(ERRORS.BILL_OCR_FAILED);
-    });
-
-    it('returns BILL_PARSE_FAILED when processor returns parse_failed', async () => {
-        mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
-        mockCallBillProcessor.mockResolvedValue({
-            ok: true,
-            data: { status: 'failed', reason: 'parse_failed' },
-        });
-        mockBillRepository.create.mockResolvedValue(ok(makeBillRow({ status: 'failed' })));
-
-        const result = await uploadBill(10, makeMullerFile());
-
-        expect(result.isErr()).toBe(true);
-        if (result.isErr()) expect(result.error).toBe(ERRORS.BILL_PARSE_FAILED);
-    });
-
-    it('returns BILL_PROCESSOR_UNAVAILABLE when FastAPI is unreachable', async () => {
-        mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
         mockCallBillProcessor.mockResolvedValue({ ok: false, error: ERRORS.BILL_PROCESSOR_UNAVAILABLE });
 
-        const result = await uploadBill(10, makeMullerFile());
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
 
-        expect(result.isErr()).toBe(true);
-        if (result.isErr()) expect(result.error).toBe(ERRORS.BILL_PROCESSOR_UNAVAILABLE);
+        expect(mockBillRepository.updateStatus).toHaveBeenLastCalledWith(1, 'failed', 'Bill processor unavailable');
     });
 
-    it('returns BILL_DUPLICATE when pHash near-duplicate found', async () => {
+    it('marks failed when FastAPI returns quality_low failure', async () => {
+        mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
         mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
+        mockCallBillProcessor.mockResolvedValue({ ok: true, data: { status: 'failed', reason: 'quality_low' } });
+
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
+
+        expect(mockBillRepository.updateStatus).toHaveBeenLastCalledWith(1, 'failed', 'quality_low');
+    });
+
+    it('marks rejected when pHash near-duplicate found (different bill)', async () => {
+        mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
+        mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
         mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess());
-        mockBillRepository.findByPhash.mockResolvedValue(ok(makeBillRow()));
+        // pHash match returns a DIFFERENT bill id (not the same bill being processed)
+        mockBillRepository.findByPhash.mockResolvedValue(ok(makeBillRow({ id: 999 })));
 
-        const result = await uploadBill(10, makeMullerFile());
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
 
-        expect(result.isErr()).toBe(true);
-        if (result.isErr()) expect(result.error).toBe(ERRORS.BILL_DUPLICATE);
+        expect(mockBillRepository.updateStatus).toHaveBeenLastCalledWith(1, 'rejected', 'Duplicate bill (visual match)');
     });
 
-    it('returns BILL_DUPLICATE when cross-user order_id + platform duplicate found', async () => {
+    it('does NOT reject when pHash match is the same bill (self-exclusion)', async () => {
+        setupProcessHappy();
+        // pHash returns the SAME bill id (bill 1 finding itself)
+        mockBillRepository.findByPhash.mockResolvedValue(ok(makeBillRow({ id: 1 })));
+
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
+
+        expect(mockBillRepository.updateProcessed).toHaveBeenCalledWith(
+            1, expect.objectContaining({ status: 'verified' })
+        );
+    });
+
+    it('marks rejected when cross-user order_id + platform duplicate found', async () => {
+        mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
         mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
         mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess());
         mockBillRepository.findByPhash.mockResolvedValue(ok(null));
         mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(makeBillRow({ user_id: 99 })));
 
-        const result = await uploadBill(10, makeMullerFile());
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
 
-        expect(result.isErr()).toBe(true);
-        if (result.isErr()) expect(result.error).toBe(ERRORS.BILL_DUPLICATE);
+        expect(mockBillRepository.updateStatus).toHaveBeenLastCalledWith(1, 'rejected', 'Duplicate order ID');
     });
 
-    it('saves pending bill and returns reward_pending=false for fraud score 50–80', async () => {
+    it('marks pending for fraud score 50-80 (no reward assigned)', async () => {
+        mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
         mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
         mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess({
             fraud_signals: {
                 fraud_score: 65,
@@ -385,24 +400,18 @@ describe('uploadBill', () => {
         mockBillRepository.findByPhash.mockResolvedValue(ok(null));
         mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(null));
         mockUploadBillImage.mockResolvedValue(ok({ url: 'https://storage.googleapis.com/b/f.jpg', gcs_path: 'gs://b/f.jpg' }));
-        mockBillRepository.create.mockResolvedValue(ok(makeBillRow({ status: 'pending', reward_amount: null })));
+        mockBillRepository.updateProcessed.mockResolvedValue(ok(undefined));
 
-        const result = await uploadBill(10, makeMullerFile());
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
 
-        expect(result.isOk()).toBe(true);
-        if (result.isOk()) {
-            expect(result.value.status).toBe('pending');
-            expect(result.value.reward_pending).toBe(false);
-        }
-        expect(mockBillRepository.create).toHaveBeenCalledWith(
-            expect.objectContaining({ status: 'pending', reward_amount: null })
+        expect(mockBillRepository.updateProcessed).toHaveBeenCalledWith(
+            1, expect.objectContaining({ status: 'pending', reward_amount: null })
         );
     });
 
-    it('returns BILL_AUTO_REJECTED for fraud score > 80', async () => {
+    it('marks rejected for fraud score > 80 without uploading image', async () => {
+        mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
         mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
         mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess({
             fraud_signals: {
                 fraud_score: 95,
@@ -413,59 +422,60 @@ describe('uploadBill', () => {
         }));
         mockBillRepository.findByPhash.mockResolvedValue(ok(null));
         mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(null));
-        mockBillRepository.create.mockResolvedValue(ok(makeBillRow({ status: 'rejected' })));
+        mockBillRepository.updateProcessed.mockResolvedValue(ok(undefined));
 
-        const result = await uploadBill(10, makeMullerFile());
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
 
-        expect(result.isErr()).toBe(true);
-        if (result.isErr()) expect(result.error).toBe(ERRORS.BILL_AUTO_REJECTED);
-        expect(mockBillRepository.create).toHaveBeenCalledWith(
-            expect.objectContaining({ status: 'rejected' })
+        expect(mockBillRepository.updateProcessed).toHaveBeenCalledWith(
+            1, expect.objectContaining({ status: 'rejected', file_url: null })
         );
+        // Image upload must NOT happen for auto-rejected bills
+        expect(mockUploadBillImage).not.toHaveBeenCalled();
+    });
+
+    it('marks failed when reward config has no active tiers', async () => {
+        mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
+        mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
+        mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess());
+        mockBillRepository.findByPhash.mockResolvedValue(ok(null));
+        mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(null));
+        mockUploadBillImage.mockResolvedValue(ok({ url: 'https://storage.googleapis.com/b/f.jpg', gcs_path: 'gs://b/f.jpg' }));
+        mockRewardConfigRepository.getActiveTiers.mockResolvedValue(ok([]));
+
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
+
+        expect(mockBillRepository.updateStatus).toHaveBeenLastCalledWith(1, 'failed', 'Reward config not found');
     });
 
     it('resets pity counter when pity was triggered', async () => {
-        setupHappyPath();
+        setupProcessHappy();
         mockDrawReward.mockReturnValue(makeDrawResult({ pity_triggered: true }));
 
-        await uploadBill(10, makeMullerFile());
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
 
         expect(mockUserRepository.resetPityCounter).toHaveBeenCalledWith(10);
         expect(mockUserRepository.incrementPityCounter).not.toHaveBeenCalled();
     });
 
     it('increments pity counter when pity was not triggered', async () => {
-        setupHappyPath();
+        setupProcessHappy();
         mockDrawReward.mockReturnValue(makeDrawResult({ pity_triggered: false }));
 
-        await uploadBill(10, makeMullerFile());
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
 
         expect(mockUserRepository.incrementPityCounter).toHaveBeenCalledWith(10);
         expect(mockUserRepository.resetPityCounter).not.toHaveBeenCalled();
     });
 
-    it('returns REWARD_CONFIG_NOT_FOUND when no active tiers configured', async () => {
-        mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
-        mockBillRepository.countUserUploads.mockResolvedValue(ok(makeUploadCounts()));
-        mockBillRepository.findBySha256Hash.mockResolvedValue(ok(null));
-        mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess());
-        mockBillRepository.findByPhash.mockResolvedValue(ok(null));
-        mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(null));
-        mockRewardConfigRepository.getActiveTiers.mockResolvedValue(ok([]));
-
-        const result = await uploadBill(10, makeMullerFile());
-
-        expect(result.isErr()).toBe(true);
-        if (result.isErr()) expect(result.error).toBe(ERRORS.REWARD_CONFIG_NOT_FOUND);
-    });
-
-    it('propagates DB error from getUploadLimits', async () => {
+    it('marks failed when getUploadLimits errors in background', async () => {
+        mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
         mockRewardConfigRepository.getUploadLimits.mockResolvedValue(err(ERRORS.DATABASE_ERROR));
 
-        const result = await uploadBill(10, makeMullerFile());
+        await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
 
-        expect(result.isErr()).toBe(true);
-        if (result.isErr()) expect(result.error).toBe(ERRORS.DATABASE_ERROR);
+        expect(mockBillRepository.updateStatus).toHaveBeenLastCalledWith(
+            1, 'failed', 'Internal error: could not fetch config'
+        );
     });
 });
 

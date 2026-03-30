@@ -11,7 +11,9 @@ import { USER_GENDERS } from '../models/user.model.ts';
 const SCHEMA = {
     VERIFY_OTP: z.object({
         // Phone must include country code, no + (e.g. 919876543210)
-        phone: z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
+        phone:        z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
+        // JWT access token returned by MSG91 widget after OTP is verified on device
+        access_token: z.string().min(10),
     }),
     ONBOARD: z.object({
         name:               z.string().min(1).max(150).trim(),
@@ -35,7 +37,7 @@ authRouter.post(
     validateRequest({ body: SCHEMA.VERIFY_OTP }),
     async function (req: Request, res: Response, next: NextFunction) {
         const body: z.infer<typeof SCHEMA.VERIFY_OTP> = req.body;
-        const result = await verifyOtp(body.phone);
+        const result = await verifyOtp(body.phone, body.access_token);
         result.match(
             (data) => res.json(successResponse(data, 'OTP verified successfully')),
             (error) => next(error)

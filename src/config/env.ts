@@ -40,5 +40,6 @@ export const BILL_PROCESSOR_URL = process.env.BILL_PROCESSOR_URL!;
 export const GCP_STORAGE_BUCKET   = process.env.GCP_STORAGE_BUCKET!;
 export const GCP_STORAGE_KEY_FILE = process.env.GCP_STORAGE_KEY_FILE!;
 
-// MSG91 (OTP + SMS notifications)
-export const MSG91_AUTH_TOKEN = process.env.MSG91_AUTH_TOKEN!;;
+// MSG91 — authkey used for server-side access token verification
+// curl POST https://control.msg91.com/api/v5/widget/verifyAccessToken
+export const MSG91_AUTHKEY = process.env.MSG91_AUTHKEY!;

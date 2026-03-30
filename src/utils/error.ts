@@ -47,6 +47,7 @@ export const ERRORS = {
     INVALID_CREDENTIALS:       new RequestError('Invalid phone or password',        30007, 401),
     NOT_AN_ADMIN:              new RequestError('This account does not have admin access', 30008, 403),
     NO_PASSWORD_SET:           new RequestError('Admin password not configured',    30009, 500),
+    INVALID_OTP:               new RequestError('OTP verification failed. Please try again.', 30010, 401),
 
     // Bill domain (4xxxx)
     BILL_NOT_FOUND:               new RequestError('Bill not found',                                     40001, 404),
