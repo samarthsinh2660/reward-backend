@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Storage } from '@google-cloud/storage';
 import { err, ok } from 'neverthrow';
 import type { Result } from 'neverthrow';
@@ -40,8 +41,7 @@ export type StorageUploadResult = {
  */
 export async function uploadBillImage(
     buffer: Buffer,
-    userId: number,
-    billId: number
+    userId: number
 ): Promise<Result<StorageUploadResult, RequestError>> {
     try {
         // Compress to JPEG 80% quality, cap at 1600px wide — no upscale
@@ -50,7 +50,7 @@ export async function uploadBillImage(
             .jpeg({ quality: 80, mozjpeg: true })
             .toBuffer();
 
-        const filename  = `bills/${userId}/bill_${billId}_${Date.now()}.jpg`;
+        const filename  = `bills/${userId}/bill_${crypto.randomUUID()}.jpg`;
         const bucket    = getStorage().bucket(GCP_STORAGE_BUCKET);
         const file      = bucket.file(filename);
 
@@ -60,8 +60,7 @@ export async function uploadBillImage(
             metadata: {
                 cacheControl: 'public, max-age=31536000',   // 1 year — images never change
                 metadata: {
-                    userId:  String(userId),
-                    billId:  String(billId),
+                    userId: String(userId),
                 },
             },
         });

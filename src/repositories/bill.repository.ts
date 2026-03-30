@@ -4,12 +4,15 @@ import { db } from '../database/db.ts';
 import { ERRORS, RequestError } from '../utils/error.ts';
 import { createLogger } from '../utils/logger.ts';
 import {
-    Bill, BillStatus, CreateBillData, BILL_TABLE,
+    Bill, BillStatus, CreateBillData, QueuedBillData, ProcessedBillData, BILL_TABLE,
 } from '../models/bill.model.ts';
 
 const logger = createLogger('@bill.repository');
 
 export interface IBillRepository {
+    createQueued(data: QueuedBillData): Promise<Result<Bill, RequestError>>;
+    findStranded(): Promise<Result<Bill[], RequestError>>;
+    updateProcessed(id: number, data: ProcessedBillData): Promise<Result<void, RequestError>>;
     create(data: CreateBillData): Promise<Result<Bill, RequestError>>;
     findById(id: number): Promise<Result<Bill | null, RequestError>>;
     findByUserId(userId: number, limit: number, before?: number): Promise<Result<Bill[], RequestError>>;
@@ -24,6 +27,69 @@ export interface IBillRepository {
 }
 
 class BillRepositoryImpl implements IBillRepository {
+
+    // Creates a minimal bill row immediately on upload — background worker fills in the rest
+    async createQueued(data: QueuedBillData): Promise<Result<Bill, RequestError>> {
+        try {
+            const [result] = await db.query<ResultSetHeader>(
+                `INSERT INTO ${BILL_TABLE} (user_id, sha256_hash, status)
+                 VALUES (?, ?, 'queued')`,
+                [data.user_id, data.sha256_hash]
+            );
+            return await this.findByIdRequired(result.insertId);
+        } catch (error) {
+            logger.error('Error creating queued bill', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    // Returns bills stuck in queued/processing — used on server startup to recover from crashes
+    async findStranded(): Promise<Result<Bill[], RequestError>> {
+        try {
+            const [rows] = await db.query<Bill[]>(
+                `SELECT * FROM ${BILL_TABLE}
+                 WHERE status IN ('queued', 'processing')
+                 ORDER BY id ASC`
+            );
+            return ok(rows);
+        } catch (error) {
+            logger.error('Error finding stranded bills', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    // Fills in all extracted fields on a queued/processing bill row after background processing completes
+    async updateProcessed(id: number, data: ProcessedBillData): Promise<Result<void, RequestError>> {
+        try {
+            await db.query(
+                `UPDATE ${BILL_TABLE}
+                 SET phash = ?, platform = ?, order_id = ?, total_amount = ?, bill_date = ?,
+                     status = ?, rejection_reason = ?, extracted_data = ?, fraud_score = ?,
+                     fraud_signals = ?, file_url = ?, reward_amount = ?, chest_decoys = ?
+                 WHERE id = ?`,
+                [
+                    data.phash,
+                    data.platform,
+                    data.order_id,
+                    data.total_amount,
+                    data.bill_date,
+                    data.status,
+                    data.rejection_reason,
+                    data.extracted_data ? JSON.stringify(data.extracted_data) : null,
+                    data.fraud_score,
+                    data.fraud_signals ? JSON.stringify(data.fraud_signals) : null,
+                    data.file_url,
+                    data.reward_amount,
+                    data.chest_decoys ? JSON.stringify(data.chest_decoys) : null,
+                    id,
+                ]
+            );
+            return ok(undefined);
+        } catch (error) {
+            logger.error('Error updating processed bill', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
 
     async create(data: CreateBillData): Promise<Result<Bill, RequestError>> {
         try {

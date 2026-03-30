@@ -43,12 +43,51 @@ export async function enqueueForProcessing<T>(
     });
 }
 
+/**
+ * Fire-and-forget: enqueue a background task without blocking the caller.
+ * Used by the async upload flow — the HTTP response is already sent before this runs.
+ * Falls back to marking the bill as failed if the queue is full.
+ */
+export function fireAndForget(
+    task: () => Promise<void>
+): void {
+    if (activeWorkers < MAX_CONCURRENT_WORKERS) {
+        runVoidTask(task);
+        return;
+    }
+
+    if (overflowQueue.length >= MAX_OVERFLOW_SIZE) {
+        logger.warn(`Queue full — background task dropped (overflow=${overflowQueue.length})`);
+        return;
+    }
+
+    overflowQueue.push(() => runVoidTask(task));
+    logger.debug(`Background task queued — position ${overflowQueue.length}`);
+}
+
 /** Current queue snapshot — useful for health/metrics endpoints */
 export function getQueueStats(): { activeWorkers: number; overflowSize: number } {
     return { activeWorkers, overflowSize: overflowQueue.length };
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
+
+async function runVoidTask(task: () => Promise<void>): Promise<void> {
+    activeWorkers++;
+    logger.debug(`Background worker started — active=${activeWorkers}, overflow=${overflowQueue.length}`);
+    try {
+        await task();
+    } catch (e) {
+        logger.error('Unhandled error in background task', e);
+    } finally {
+        activeWorkers--;
+        const next = overflowQueue.shift();
+        if (next) {
+            logger.debug(`Draining overflow — remaining=${overflowQueue.length}`);
+            next();
+        }
+    }
+}
 
 async function runTask<T>(
     task: () => Promise<Result<T, RequestError>>

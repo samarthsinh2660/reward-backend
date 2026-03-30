@@ -8,9 +8,9 @@ import validateRequest from '../middleware/validate-request.middleware.ts';
 import { successResponse } from '../utils/response.ts';
 import { ERRORS } from '../utils/error.ts';
 import {
-    uploadBill, listBills, getBill, openChest,
+    acceptBill, processBillInBackground, listBills, getBill, openChest,
 } from '../controller/bill.controller.ts';
-import { enqueueForProcessing } from '../services/bill-queue.service.ts';
+import { fireAndForget } from '../services/bill-queue.service.ts';
 
 const SCHEMA = {
     LIST: z.object({
@@ -45,11 +45,21 @@ billRouter.post(
     },
     async function (req: Request, res: Response, next: NextFunction) {
         if (!req.file) return next(ERRORS.BILL_INVALID_FILE);
-        const result = await enqueueForProcessing(() => uploadBill(req.user!.id, req.file!));
-        result.match(
-            (data) => res.json(successResponse(data, 'Bill processed successfully')),
-            (error) => next(error)
+
+        // Phase 1: fast — dedup + limit check + create queued row (~200ms)
+        const result = await acceptBill(req.user!.id, req.file);
+        if (result.isErr()) return next(result.error);
+
+        const { bill_id } = result.value;
+        const { buffer, mimetype, originalname } = req.file;
+        const userId = req.user!.id;
+
+        // Phase 2: fire-and-forget — response is sent before this runs
+        fireAndForget(() =>
+            processBillInBackground(bill_id, userId, buffer, mimetype, originalname)
         );
+
+        res.json(successResponse(result.value, 'Bill received and queued for processing'));
     }
 );
 

@@ -4,7 +4,7 @@ export const BILL_TABLE = 'bills';
 
 // ── Enum constants — import these in routes/queries, never hardcode strings ──
 
-export const BILL_STATUSES = ['pending', 'processing', 'verified', 'rejected', 'failed'] as const;
+export const BILL_STATUSES = ['queued', 'pending', 'processing', 'verified', 'rejected', 'failed'] as const;
 export type BillStatus = typeof BILL_STATUSES[number];
 
 export const BILL_PLATFORMS = ['swiggy', 'zomato', 'zepto', 'blinkit', 'unknown'] as const;
@@ -81,6 +81,29 @@ export type BillView = {
 
 // ── Input types ───────────────────────────────────────────────────────────────
 
+// Minimal data needed to create the queued row before background processing starts
+export type QueuedBillData = {
+    user_id: number;
+    sha256_hash: string;
+};
+
+// Full extracted data written back to the bill row after background processing completes
+export type ProcessedBillData = {
+    phash: string;
+    platform: BillPlatform;
+    order_id: string | null;
+    total_amount: number | null;
+    bill_date: string | null;
+    status: BillStatus;
+    rejection_reason: string | null;
+    extracted_data: object | null;
+    fraud_score: number;
+    fraud_signals: object | null;
+    file_url: string | null;
+    reward_amount: number | null;
+    chest_decoys: [number, number] | null;
+};
+
 export type CreateBillData = {
     user_id: number;
     file_url: string | null;           // Cloudinary URL — null on failure/pending bills
@@ -119,6 +142,13 @@ export type ChestOpenResponse = {
 };
 
 // ── Converters ────────────────────────────────────────────────────────────────
+
+export function toPlatform(raw: string | null | undefined): BillPlatform {
+    const value = raw ?? 'unknown';
+    return (BILL_PLATFORMS as readonly string[]).includes(value)
+        ? value as BillPlatform
+        : 'unknown';
+}
 
 export function toBillView(row: Bill): BillView {
     return {
