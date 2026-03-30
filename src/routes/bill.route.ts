@@ -26,6 +26,8 @@ const billRouter = Router();
 
 // ─── POST /api/bills/upload ──────────────────────────────────────────────────
 // Accepts multipart/form-data. Field name: "file".
+// Returns immediately with bill_id + status='queued'.
+// Client must poll GET /api/bills/:id until status changes to verified/pending/rejected/failed.
 billRouter.post(
     '/upload',
     authenticate,
@@ -55,7 +57,7 @@ billRouter.post(
         const userId = req.user!.id;
 
         // Phase 2: fire-and-forget — response is sent before this runs
-        fireAndForget(() =>
+        fireAndForget(bill_id, () =>
             processBillInBackground(bill_id, userId, buffer, mimetype, originalname)
         );
 
