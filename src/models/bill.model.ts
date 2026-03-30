@@ -87,6 +87,23 @@ export type QueuedBillData = {
     sha256_hash: string;
 };
 
+// Full extracted data written back to the bill row after background processing completes
+export type ProcessedBillData = {
+    phash: string;
+    platform: BillPlatform;
+    order_id: string | null;
+    total_amount: number | null;
+    bill_date: string | null;
+    status: BillStatus;
+    rejection_reason: string | null;
+    extracted_data: object | null;
+    fraud_score: number;
+    fraud_signals: object | null;
+    file_url: string | null;
+    reward_amount: number | null;
+    chest_decoys: [number, number] | null;
+};
+
 export type CreateBillData = {
     user_id: number;
     file_url: string | null;           // Cloudinary URL — null on failure/pending bills
@@ -125,6 +142,13 @@ export type ChestOpenResponse = {
 };
 
 // ── Converters ────────────────────────────────────────────────────────────────
+
+export function toPlatform(raw: string | null | undefined): BillPlatform {
+    const value = raw ?? 'unknown';
+    return (BILL_PLATFORMS as readonly string[]).includes(value)
+        ? value as BillPlatform
+        : 'unknown';
+}
 
 export function toBillView(row: Bill): BillView {
     return {

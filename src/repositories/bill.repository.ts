@@ -4,26 +4,10 @@ import { db } from '../database/db.ts';
 import { ERRORS, RequestError } from '../utils/error.ts';
 import { createLogger } from '../utils/logger.ts';
 import {
-    Bill, BillStatus, CreateBillData, QueuedBillData, BILL_TABLE,
+    Bill, BillStatus, CreateBillData, QueuedBillData, ProcessedBillData, BILL_TABLE,
 } from '../models/bill.model.ts';
 
 const logger = createLogger('@bill.repository');
-
-export type ProcessedBillData = {
-    phash: string;
-    platform: import('../models/bill.model.ts').BillPlatform;
-    order_id: string | null;
-    total_amount: number | null;
-    bill_date: string | null;
-    status: import('../models/bill.model.ts').BillStatus;
-    rejection_reason: string | null;
-    extracted_data: object | null;
-    fraud_score: number;
-    fraud_signals: object | null;
-    file_url: string | null;
-    reward_amount: number | null;
-    chest_decoys: [number, number] | null;
-};
 
 export interface IBillRepository {
     createQueued(data: QueuedBillData): Promise<Result<Bill, RequestError>>;

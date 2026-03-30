@@ -11,20 +11,11 @@ import { uploadBillImage } from '../services/gcp-storage.service.ts';
 import { drawReward } from './reward.controller.ts';
 import {
     BillView, BillUploadResponse, ChestOpenResponse,
-    BillStatus, BillPlatform, BILL_PLATFORMS, toBillView,
+    BillStatus, toBillView, toPlatform,
 } from '../models/bill.model.ts';
 import { Paginated } from '../types/pagination.ts';
 
 const logger = createLogger('@bill.controller');
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function toPlatform(raw: string | null | undefined): BillPlatform {
-    const value = raw ?? 'unknown';
-    return (BILL_PLATFORMS as readonly string[]).includes(value)
-        ? value as BillPlatform
-        : 'unknown';
-}
 
 // ── Fraud score thresholds (matches wahtisapp.md spec) ────────────────────────
 const FRAUD_AUTO_APPROVE_MAX  = 49;
@@ -358,6 +349,7 @@ export const adminApproveBill = async (
     if (!bill) return err(ERRORS.BILL_NOT_FOUND);
     if (bill.status !== 'pending') return err(ERRORS.BILL_NOT_VERIFIED);
 
+    // Run reward engine for this bill
     const tiersResult = await RewardConfigRepository.getActiveTiers();
     if (tiersResult.isErr()) return err(tiersResult.error);
     if (tiersResult.value.length === 0) return err(ERRORS.REWARD_CONFIG_NOT_FOUND);
