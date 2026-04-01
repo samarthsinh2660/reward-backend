@@ -26,7 +26,7 @@ OCR_MIN_CONFIDENCE: float  = 0.60
 # ── Image quality thresholds ─────────────────────────────────────────────────
 MIN_SHARPNESS: float       = 80.0
 MIN_BRIGHTNESS: float      = 40.0
-MAX_BRIGHTNESS: float      = 230.0
+MAX_BRIGHTNESS: float      = 250.0
 MIN_WIDTH_PX: int          = 400
 MIN_HEIGHT_PX: int         = 400
 

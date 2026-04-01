@@ -7,8 +7,12 @@ export const BILL_TABLE = 'bills';
 export const BILL_STATUSES = ['queued', 'pending', 'processing', 'verified', 'rejected', 'failed'] as const;
 export type BillStatus = typeof BILL_STATUSES[number];
 
-export const BILL_PLATFORMS = ['swiggy', 'zomato', 'zepto', 'blinkit', 'unknown'] as const;
-export type BillPlatform = typeof BILL_PLATFORMS[number];
+// Supported platforms — used for reward eligibility checks
+export const SUPPORTED_PLATFORMS = ['swiggy', 'zomato', 'zepto', 'blinkit'] as const;
+export type SupportedPlatform = typeof SUPPORTED_PLATFORMS[number];
+
+// platform stored in DB is a free string — any detected name or "unknown"
+export type BillPlatform = string;
 
 // ── CREATE TABLE (mirrors 01-tables.sql exactly — do not edit, update SQL first) ──
 
@@ -23,7 +27,7 @@ CREATE TABLE IF NOT EXISTS bills (
   order_id         VARCHAR(255),
   total_amount     DECIMAL(10, 2),
   bill_date        DATE,
-  status           ENUM('pending', 'processing', 'verified', 'rejected', 'failed') NOT NULL DEFAULT 'pending',
+  status           ENUM('queued', 'pending', 'processing', 'verified', 'rejected', 'failed') NOT NULL DEFAULT 'queued',
   rejection_reason VARCHAR(500),
   extracted_data   JSON,
   fraud_score      INT NOT NULL DEFAULT 0,
@@ -144,10 +148,11 @@ export type ChestOpenResponse = {
 // ── Converters ────────────────────────────────────────────────────────────────
 
 export function toPlatform(raw: string | null | undefined): BillPlatform {
-    const value = raw ?? 'unknown';
-    return (BILL_PLATFORMS as readonly string[]).includes(value)
-        ? value as BillPlatform
-        : 'unknown';
+    return (raw ?? 'unknown').toLowerCase().trim() || 'unknown';
+}
+
+export function isSupportedPlatform(platform: string | null): platform is SupportedPlatform {
+    return (SUPPORTED_PLATFORMS as readonly string[]).includes(platform ?? '');
 }
 
 export function toBillView(row: Bill): BillView {

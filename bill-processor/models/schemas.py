@@ -4,16 +4,19 @@ from typing import Optional, List
 
 class BillItem(BaseModel):
     name: str
+    hsn_code: Optional[str] = None
     quantity: Optional[float] = None
     unit_price: Optional[float] = None
     total_price: Optional[float] = None
 
 
 class ExtractedBillData(BaseModel):
-    platform: Optional[str] = None          # swiggy | zomato | zepto | blinkit | unknown
+    platform: Optional[str] = None          # detected platform name (lowercase), "unknown" if unidentifiable
+    is_supported_platform: bool = False     # True only if platform is in the active ALLOWED_PLATFORMS list
     order_id: Optional[str] = None
     order_date: Optional[str] = None        # ISO date string YYYY-MM-DD
     merchant_name: Optional[str] = None
+    seller_gstin: Optional[str] = None
     total_amount: Optional[float] = None
     subtotal: Optional[float] = None
     delivery_fee: Optional[float] = None
@@ -21,6 +24,10 @@ class ExtractedBillData(BaseModel):
     taxes: Optional[float] = None
     items: List[BillItem] = []
     currency: str = "INR"
+    delivery_city: Optional[str] = None
+    delivery_state: Optional[str] = None
+    delivery_pincode: Optional[str] = None
+    place_of_supply: Optional[str] = None
     raw_text_snippet: Optional[str] = None  # first 200 chars of OCR text (debug only)
 
 

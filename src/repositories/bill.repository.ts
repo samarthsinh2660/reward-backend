@@ -166,7 +166,9 @@ class BillRepositoryImpl implements IBillRepository {
     async findBySha256Hash(hash: string): Promise<Result<Bill | null, RequestError>> {
         try {
             const [rows] = await db.query<Bill[]>(
-                `SELECT id, user_id, sha256_hash, status FROM ${BILL_TABLE} WHERE sha256_hash = ? LIMIT 1`,
+                `SELECT id, user_id, sha256_hash, status FROM ${BILL_TABLE}
+                 WHERE sha256_hash = ? AND status != 'failed'
+                 LIMIT 1`,
                 [hash]
             );
             return ok(rows.length > 0 ? rows[0] : null);
