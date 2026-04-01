@@ -5,10 +5,17 @@ import validateRequest from '../middleware/validate-request.middleware.ts';
 import { authLimiter } from '../middleware/ratelimit.middleware.ts';
 import { errorHandler } from '../middleware/error.middleware.ts';
 import { successResponse } from '../utils/response.ts';
-import { verifyOtp, onboardUser, getMe, refreshAccessToken } from '../controller/auth.controller.ts';
+import { verifyOtp, onboardUser, getMe, refreshAccessToken, sendOtp, verifyOtpDirect } from '../controller/auth.controller.ts';
 import { USER_GENDERS } from '../models/user.model.ts';
 
 const SCHEMA = {
+    SEND_OTP: z.object({
+        phone: z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
+    }),
+    VERIFY_OTP_DIRECT: z.object({
+        phone: z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
+        otp:   z.string().length(4).regex(/^\d{4}$/, 'OTP must be 4 digits'),
+    }),
     VERIFY_OTP: z.object({
         // Phone must include country code, no + (e.g. 919876543210)
         phone:        z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
@@ -28,9 +35,40 @@ const SCHEMA = {
 
 const authRouter = Router();
 
+// ─── POST /api/auth/send-otp ──────────────────────────────────────────────────
+// Sends OTP via MSG91 REST API. Works without the native SDK (Expo Go compatible).
+authRouter.post(
+    '/send-otp',
+    authLimiter,
+    validateRequest({ body: SCHEMA.SEND_OTP }),
+    async function (req: Request, res: Response, next: NextFunction) {
+        const { phone }: z.infer<typeof SCHEMA.SEND_OTP> = req.body;
+        const result = await sendOtp(phone);
+        result.match(
+            (data) => res.json(successResponse(data, 'OTP sent successfully')),
+            (error) => next(error)
+        );
+    }
+);
+
+// ─── POST /api/auth/verify-otp ────────────────────────────────────────────────
+// Verifies OTP via MSG91 REST API, then finds/creates user. No native SDK needed.
+authRouter.post(
+    '/verify-otp',
+    authLimiter,
+    validateRequest({ body: SCHEMA.VERIFY_OTP_DIRECT }),
+    async function (req: Request, res: Response, next: NextFunction) {
+        const { phone, otp }: z.infer<typeof SCHEMA.VERIFY_OTP_DIRECT> = req.body;
+        const result = await verifyOtpDirect(phone, otp);
+        result.match(
+            (data) => res.json(successResponse(data, 'OTP verified successfully')),
+            (error) => next(error)
+        );
+    }
+);
+
 // ─── POST /api/auth/verify ────────────────────────────────────────────────────
-// Called by frontend after MSG91 OTP verified successfully on device.
-// Finds or creates the user, returns JWT + user profile.
+// Legacy widget flow — kept for future dev-build support.
 authRouter.post(
     '/verify',
     authLimiter,
@@ -46,7 +84,6 @@ authRouter.post(
 );
 
 // ─── POST /api/auth/onboard ───────────────────────────────────────────────────
-// Called once — on new user's first login, after verify, when is_onboarded is false.
 authRouter.post(
     '/onboard',
     authenticate,
@@ -95,7 +132,5 @@ authRouter.post(
     }
 );
 
-// Must be the last line of every route file
 authRouter.use(errorHandler);
-
 export default authRouter;

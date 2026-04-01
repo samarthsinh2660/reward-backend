@@ -1,8 +1,11 @@
 import io
+import logging
 import struct
 from PIL import Image, ExifTags
 
 from config import TAMPERING_CONFIDENCE_THRESHOLD  # noqa: F401 — re-exported for fraud.py
+
+logger = logging.getLogger(__name__)
 
 
 class TamperingResult:
@@ -54,14 +57,14 @@ def check_tampering(file_bytes: bytes) -> TamperingResult:
             score += 0.20
             reasons.append(f"suspicious_small_dimensions:{w}x{h}")
 
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Tampering check error ({type(e).__name__}): {e}")
         score += 0.10
         reasons.append("image_inspection_failed")
 
-    return TamperingResult(
-        confidence=round(min(score, 1.0), 3),
-        points=reasons,
-    )
+    result = TamperingResult(confidence=round(min(score, 1.0), 3), points=reasons)
+    logger.info(f"Tampering result: confidence={result.confidence} reasons={reasons}")
+    return result
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────

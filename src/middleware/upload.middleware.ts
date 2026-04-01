@@ -3,10 +3,10 @@ import { Request } from 'express';
 import { ERRORS } from '../utils/error.ts';
 
 // ── Accepted file types — defined here as the single source of truth ──────────
-export const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'] as const;
+export const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'] as const;
 export type AllowedMimeType = typeof ALLOWED_MIME_TYPES[number];
 
-const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;   // 10 MB — matches FastAPI limit
+const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;   // 20 MB — supports PDFs
 
 const storage = multer.memoryStorage();
 
@@ -15,7 +15,14 @@ const fileFilter = (
     file: Express.Multer.File,
     cb: multer.FileFilterCallback
 ) => {
-    if ((ALLOWED_MIME_TYPES as readonly string[]).includes(file.mimetype)) {
+    const mime = file.mimetype.toLowerCase();
+    // Accept images, PDF, and octet-stream (Android sometimes sends this for PDFs)
+    const isValid =
+        mime.startsWith('image/') ||
+        mime === 'application/pdf' ||
+        mime === 'application/octet-stream';
+
+    if (isValid) {
         cb(null, true);
     } else {
         cb(new Error(ERRORS.BILL_INVALID_FILE.message));

@@ -1,6 +1,9 @@
+import logging
 from config import TAMPERING_CONFIDENCE_THRESHOLD
 from models.schemas import FraudSignals, ExtractedBillData
 from services.tampering import TamperingResult
+
+logger = logging.getLogger(__name__)
 
 
 # ── Scoring weights ───────────────────────────────────────────────────────────
@@ -73,10 +76,12 @@ def compute_fraud_signals(
         else 0
     )
 
+    score = rule_points + tampering_points
+    logger.info(f"Fraud score={score} violations={violations} tampering_confidence={tampering.confidence}")
     return FraudSignals(
         tampering_confidence=tampering.confidence,
         tampering_points=tampering_points,
         rule_violations=violations,
         rule_violation_points=rule_points,
-        fraud_score=rule_points + tampering_points,
+        fraud_score=score,
     )

@@ -39,17 +39,19 @@ services:
         max-file: "3"
     ports:
       - "8000:8000"
+    env_file:
+      - ./bill-processor/.env
     environment:
+      # Override the path from .env — must be the absolute in-container path
       GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/vision.json
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
     volumes:
       - ./bill-processor/credentials:/app/credentials:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 15s
+      interval: 60s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 15s
 
   billpay_backend:
     build:

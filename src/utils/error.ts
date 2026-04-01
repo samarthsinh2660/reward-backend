@@ -48,6 +48,7 @@ export const ERRORS = {
     NOT_AN_ADMIN:              new RequestError('This account does not have admin access', 30008, 403),
     NO_PASSWORD_SET:           new RequestError('Admin password not configured',    30009, 500),
     INVALID_OTP:               new RequestError('OTP verification failed. Please try again.', 30010, 401),
+    OTP_SEND_FAILED:           new RequestError('Failed to send OTP. Please try again.',       30011, 502),
 
     // Bill domain (4xxxx)
     BILL_NOT_FOUND:               new RequestError('Bill not found',                                     40001, 404),
@@ -58,7 +59,7 @@ export const ERRORS = {
     BILL_PARSE_FAILED:            new RequestError('Could not extract bill data. Upload a clearer image.',   40006, 422),
     BILL_UPLOAD_LIMIT_REACHED:    new RequestError('Upload limit reached. Try again tomorrow.',          40007, 429),
     BILL_PROCESSOR_UNAVAILABLE:   new RequestError('Bill processing service unavailable. Try again.',    40008, 503),
-    BILL_INVALID_FILE:            new RequestError('Invalid file. Upload a JPEG, PNG, or WebP image.',   40009, 400),
+    BILL_INVALID_FILE:            new RequestError('Invalid file. Upload a JPEG, PNG, WebP, or PDF.',    40009, 400),
     BILL_NOT_OWNED:               new RequestError('You do not have access to this bill.',               40010, 403),
     CHEST_ALREADY_OPENED:         new RequestError('Chest has already been opened for this bill.',       40011, 409),
     BILL_NOT_VERIFIED:            new RequestError('Bill is not verified yet. Reward is not available.', 40012, 422),

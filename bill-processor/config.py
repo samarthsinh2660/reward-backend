@@ -12,12 +12,14 @@ OPENAI_API_KEY: str                    = os.environ.get("OPENAI_API_KEY", "")
 GOOGLE_APPLICATION_CREDENTIALS: str   = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 # ── File upload limits ────────────────────────────────────────────────────────
-MAX_FILE_SIZE_BYTES: int               = 10 * 1024 * 1024   # 10 MB
+MAX_FILE_SIZE_BYTES: int               = 20 * 1024 * 1024   # 20 MB
 ALLOWED_CONTENT_TYPES: frozenset[str] = frozenset({
     "image/jpeg",
     "image/jpg",
     "image/png",
     "image/webp",
+    "application/pdf",
+    "application/octet-stream",
 })
 
 # ── OCR quality thresholds ────────────────────────────────────────────────────

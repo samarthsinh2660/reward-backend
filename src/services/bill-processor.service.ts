@@ -69,7 +69,7 @@ export async function callBillProcessor(
         const form = new FormData();
         form.append(
             'file',
-            new Blob([fileBuffer], { type: mimetype }),
+            new Blob([fileBuffer as unknown as ArrayBuffer], { type: mimetype }),
             originalname
         );
 

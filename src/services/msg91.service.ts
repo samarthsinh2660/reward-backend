@@ -1,41 +1,109 @@
-import { MSG91_AUTHKEY } from '../config/env.ts';
+import { MSG91_AUTHKEY, NODE_ENV } from '../config/env.ts';
 import { createLogger } from '../utils/logger.ts';
 
 const logger = createLogger('@msg91.service');
 
-const MSG91_VERIFY_URL = 'https://control.msg91.com/api/v5/widget/verifyAccessToken';
+const BASE = 'https://control.msg91.com/api/v5';
+const DEMO_OTP = '1234';
 
-type Msg91VerifySuccess = { type: 'success'; message: string };
-type Msg91VerifyFail    = { type: 'error';   message: string };
-type Msg91VerifyResult  = Msg91VerifySuccess | Msg91VerifyFail;
+// ─── MSG91 Token Verification (Widget Flow — Legacy) ───────────────────────
 
-/**
- * Server-side verification of the MSG91 access token received from the OTP widget.
- * Returns true when MSG91 confirms the token is valid (OTP was genuinely verified).
- * Returns false on any failure — caller should reject with 401.
- */
-export async function verifyMsg91Token(accessToken: string): Promise<boolean> {
-    try {
-        const res = await fetch(MSG91_VERIFY_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                authkey:        MSG91_AUTHKEY,
-                'access-token': accessToken,
-            }),
-            signal: AbortSignal.timeout(8000), // 8s timeout
-        });
+export async function verifyMsg91Token(_accessToken: string): Promise<boolean> {
+    // Legacy widget-based flow — not used in current demo mode.
+    // Stub implementation returns false.
+    // TODO: Implement server-side MSG91 token validation when widget is fully configured.
+    return false;
+}
 
-        const json = await res.json() as Msg91VerifyResult;
+function headers() {
+    return {
+        'Content-Type': 'application/json',
+        'authkey': MSG91_AUTHKEY,
+    };
+}
 
-        if (json.type === 'success') {
-            return true;
-        }
+// ─── Send OTP ─────────────────────────────────────────────────────────────────
 
-        logger.warn(`MSG91 token verification failed: ${json.message}`);
-        return false;
-    } catch (e) {
-        logger.error('MSG91 verifyAccessToken request failed', e);
-        return false;
+export async function sendOtpViaMSG91(mobile: string): Promise<void> {
+    // DEMO MODE: bypass real MSG91
+    if (NODE_ENV !== 'production') {
+        logger.info(`[DEMO] OTP sent to ${mobile}: ${DEMO_OTP}`);
+        return;
     }
+
+    // PRODUCTION: send real OTP via MSG91
+    // const res = await fetch(`${BASE}/otp`, {
+    //     method: 'POST',
+    //     headers: headers(),
+    //     body: JSON.stringify({
+    //         mobile,
+    //         otp_length: 4,
+    //         otp_expiry: 10,
+    //     }),
+    //     signal: AbortSignal.timeout(10_000),
+    // });
+
+    // const json = await res.json() as { type: string; message?: string };
+    // if (json.type !== 'success') {
+    //     logger.warn(`MSG91 sendOtp failed: ${json.message}`);
+    //     throw new Error(json.message ?? 'Failed to send OTP');
+    // }
+}
+
+// ─── Verify OTP ───────────────────────────────────────────────────────────────
+
+export async function verifyOtpViaMSG91(mobile: string, otp: string): Promise<boolean> {
+    // DEMO MODE: use fixed OTP
+    if (NODE_ENV !== 'production') {
+        const isValid = otp === DEMO_OTP;
+        logger.info(`[DEMO] OTP verify for ${mobile}: ${isValid ? 'SUCCESS' : 'FAILED'} (entered: ${otp})`);
+        return isValid;
+    }
+
+    // PRODUCTION: verify with MSG91
+    // try {
+    //     const res = await fetch(`${BASE}/otp/verify`, {
+    //         method: 'POST',
+    //         headers: headers(),
+    //         body: JSON.stringify({ mobile, otp }),
+    //         signal: AbortSignal.timeout(10_000),
+    //     });
+
+    //     const json = await res.json() as { type: string; message?: string };
+    //     if (json.type === 'success') return true;
+    //     logger.warn(`MSG91 verifyOtp failed: ${json.message}`);
+    //     return false;
+    // } catch (e) {
+    //     logger.error('MSG91 verifyOtp request failed', e);
+    //     return false;
+    // }
+
+    return false;
+}
+
+// ─── Resend OTP ───────────────────────────────────────────────────────────────
+
+export async function resendOtpViaMSG91(mobile: string): Promise<void> {
+    // DEMO MODE: bypass real MSG91
+    if (NODE_ENV !== 'production') {
+        logger.info(`[DEMO] OTP resent to ${mobile}: ${DEMO_OTP}`);
+        return;
+    }
+
+    // PRODUCTION: resend via MSG91
+    // const res = await fetch(`${BASE}/otp/retry`, {
+    //     method: 'POST',
+    //     headers: headers(),
+    //     body: JSON.stringify({
+    //         mobile,
+    //         retrytype: 'text',
+    //     }),
+    //     signal: AbortSignal.timeout(10_000),
+    // });
+
+    // const json = await res.json() as { type: string; message?: string };
+    // if (json.type !== 'success') {
+    //     logger.warn(`MSG91 resendOtp failed: ${json.message}`);
+    //     throw new Error(json.message ?? 'Failed to resend OTP');
+    // }
 }
