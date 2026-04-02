@@ -1,4 +1,4 @@
-import os
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, UploadFile, Request
@@ -14,21 +14,18 @@ from services.parser import parse_bill
 from services.tampering import check_tampering
 from services.fraud import compute_fraud_signals
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
+logger = logging.getLogger("main")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Fail fast on startup if required credentials are missing."""
     if not config.OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY environment variable is not set")
-
-    if not config.GOOGLE_APPLICATION_CREDENTIALS:
-        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS environment variable is not set")
-
-    if not os.path.exists(config.GOOGLE_APPLICATION_CREDENTIALS):
-        raise RuntimeError(
-            f"Google credentials file not found: {config.GOOGLE_APPLICATION_CREDENTIALS!r}"
-        )
-
+    logger.info("Bill processor started — OPENAI_API_KEY present")
     yield
 
 
@@ -42,12 +39,12 @@ app = FastAPI(
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Return our standard ProcessFailResponse shape for FastAPI 422 validation errors."""
     errors = exc.errors()
     detail = "; ".join(
         f"{' → '.join(str(loc) for loc in e['loc'])}: {e['msg']}"
         for e in errors
     )
+    logger.warning(f"Request validation failed: {detail}")
     return JSONResponse(
         status_code=422,
         content=ProcessFailResponse(
@@ -71,59 +68,80 @@ def health():
     },
 )
 async def process_bill(file: UploadFile = File(...)):
-    """
-    Full bill processing pipeline:
-      1. File type + size validation
-      2. Image quality check  (OpenCV — sharpness, brightness, resolution)
-      3. OCR                  (Google Vision API)
-      4. Structured parsing   (OpenAI gpt-4o-mini)
-      5. Tampering detection  (EXIF metadata + JPEG structure)
-      6. Fraud scoring        (rule-based point system)
-    """
+    content_type = (file.content_type or "").lower().split(";")[0].strip()
+    filename = file.filename or "unknown"
+    logger.info(f"[1/6] Received file: {filename!r} content_type={content_type!r}")
 
     # ── 1. File type validation ───────────────────────────────────────────────
-    content_type = (file.content_type or "").lower().split(";")[0].strip()
     if content_type not in config.ALLOWED_CONTENT_TYPES:
-        return _fail(
-            400,
-            "invalid_file",
-            f"Unsupported file type '{content_type}'. Upload a JPEG, PNG, or WebP image.",
-        )
+        logger.warning(f"[1/6] REJECTED — unsupported content_type={content_type!r}")
+        return _fail(400, "invalid_file", f"Unsupported file type '{content_type}'. Upload a JPEG, PNG, WebP, or PDF.")
 
     file_bytes = await file.read()
 
-    # Empty check must come before size check
     if not file_bytes:
+        logger.warning("[1/6] REJECTED — empty file")
         return _fail(400, "invalid_file", "Uploaded file is empty.")
 
+    size_kb = len(file_bytes) / 1024
     if len(file_bytes) > config.MAX_FILE_SIZE_BYTES:
         mb = config.MAX_FILE_SIZE_BYTES // (1024 * 1024)
+        logger.warning(f"[1/6] REJECTED — file too large ({size_kb:.1f} KB)")
         return _fail(400, "invalid_file", f"File too large. Maximum allowed size is {mb} MB.")
 
-    # ── 2. Hashes (cheap — run before any API calls) ─────────────────────────
+    logger.info(f"[1/6] File accepted — {size_kb:.1f} KB")
+
+    # ── 2. Hashes ─────────────────────────────────────────────────────────────
+    is_pdf = content_type in ("application/pdf", "application/octet-stream")
     image_hash = compute_sha256(file_bytes)
-    phash      = compute_phash(file_bytes)
+
+    if is_pdf:
+        phash = image_hash
+        logger.info(f"[2/6] PDF detected — skipping phash, sha256={image_hash[:16]}...")
+    else:
+        phash = compute_phash(file_bytes)
+        logger.info(f"[2/6] Hashes computed — sha256={image_hash[:16]}... phash={phash}")
 
     # ── 3. Quality gate ───────────────────────────────────────────────────────
-    quality = check_quality(file_bytes)
-    if not quality.passed:
-        return _fail(400, quality.reason, quality.detail.get("error", "Image quality is too low."))
+    if not is_pdf:
+        logger.info("[3/6] Running image quality check...")
+        quality = check_quality(file_bytes)
+        if not quality.passed:
+            logger.warning(f"[3/6] REJECTED — quality check failed: {quality.reason} — {quality.detail}")
+            return _fail(400, quality.reason, quality.detail.get("error", "Image quality is too low."))
+        logger.info(f"[3/6] Quality OK — {quality.detail}")
+    else:
+        logger.info("[3/6] Skipping quality check for PDF")
 
     # ── 4. OCR ────────────────────────────────────────────────────────────────
-    ocr = run_ocr(file_bytes)
+    logger.info("[4/6] Running OCR...")
+    ocr = run_ocr(file_bytes, content_type=content_type)
     if not ocr.passed:
+        logger.error(f"[4/6] OCR FAILED — reason={ocr.reason!r} message={ocr.message!r}")
         return _fail(400, ocr.reason, ocr.message)
+    logger.info(f"[4/6] OCR OK — extracted {len(ocr.text)} chars")
 
-    # ── 5. Structured parsing ─────────────────────────────────────────────────
+    # ── 5. Parsing ────────────────────────────────────────────────────────────
+    logger.info("[5/6] Running parser...")
     parsed = parse_bill(ocr.text)
     if not parsed.passed:
+        logger.error(f"[5/6] PARSE FAILED — reason={parsed.reason!r} message={parsed.message!r}")
         return _fail(400, parsed.reason, parsed.message)
+    logger.info(
+        f"[5/6] Parse OK — platform={parsed.data.platform!r} "
+        f"order_id={parsed.data.order_id!r} total={parsed.data.total_amount} "
+        f"items={len(parsed.data.items)}"
+    )
 
-    # ── 6. Tampering detection ────────────────────────────────────────────────
+    # ── 6. Tampering + Fraud ──────────────────────────────────────────────────
+    logger.info("[6/6] Running tampering detection and fraud scoring...")
     tampering = check_tampering(file_bytes)
-
-    # ── 7. Fraud scoring ──────────────────────────────────────────────────────
     fraud_signals = compute_fraud_signals(parsed.data, tampering)
+    logger.info(
+        f"[6/6] Done — tampering_confidence={tampering.confidence} "
+        f"fraud_score={fraud_signals.fraud_score} "
+        f"violations={fraud_signals.rule_violations}"
+    )
 
     return ProcessSuccessResponse(
         extracted_data=parsed.data,

@@ -1,9 +1,13 @@
 import json
 import time
 from openai import OpenAI, RateLimitError
+import logging
+from openai import OpenAI
 
 from config import OPENAI_API_KEY, ALLOWED_PLATFORMS
 from models.schemas import ExtractedBillData, BillItem
+
+logger = logging.getLogger(__name__)
 
 
 # Module-level singleton — created once, reused across all requests.
@@ -186,3 +190,183 @@ def _to_str(val) -> str | None:
     if val is None or str(val).strip() in ("", "null", "None"):
         return None
     return str(val).strip()
+
+
+def _parse_text_fallback(ocr_text: str) -> ParseResult:
+    """
+    Regex-based extraction from real OCR/PDF text.
+    Used when OpenAI is unavailable. Parses actual content — not hardcoded.
+    """
+    import re
+
+    text = ocr_text
+
+    # ── Platform ──────────────────────────────────────────────────────────────
+    platform = "unknown"
+    for p in ALLOWED_PLATFORMS:
+        if re.search(p, text, re.IGNORECASE):
+            platform = p
+            break
+
+    # ── Order ID ──────────────────────────────────────────────────────────────
+    order_id = None
+    for pat in [
+        r'Order\s*No\.?\s*[:\-]?\s*([A-Z0-9]+)',
+        r'Order\s*ID\s*[:\-]?\s*([A-Z0-9]+)',
+        r'Order\s*#\s*([A-Z0-9]+)',
+    ]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            order_id = m.group(1).strip()
+            break
+
+    # ── Date ──────────────────────────────────────────────────────────────────
+    order_date = None
+    m = re.search(r'\b(\d{2})[-/](\d{2})[-/](\d{4})\b', text)
+    if m:
+        order_date = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+    else:
+        m = re.search(r'\b(\d{4})[-/](\d{2})[-/](\d{2})\b', text)
+        if m:
+            order_date = m.group(0)
+
+    # ── Merchant name ─────────────────────────────────────────────────────────
+    # pypdf can concatenate lines without \n, so stop at company-type suffix
+    # OR at address/GSTIN keywords — whichever comes first.
+    merchant_name = None
+    for pat in [
+        r'Seller\s*Name\s*[:\-]?\s*(.+?(?:Pvt\.?\s*Ltd\.?|Private\s+Limited|LLP|LLC|Limited|Co\.))',
+        r'Seller\s*Name\s*[:\-]?\s*(.+?)(?:\n|GSTIN|FSSAI|No\s+\d)',
+        r'Restaurant\s*[:\-]?\s*(.+?)(?:\n|$)',
+        r'From\s*[:\-]?\s*(.+?)(?:\n|$)',
+    ]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            merchant_name = m.group(1).strip()
+            break
+
+    # ── Total amount ──────────────────────────────────────────────────────────
+    total_amount = None
+    for pat in [
+        r'Invoice\s*Value\s*[\r\n\s]+([\d,]+\.?\d*)',
+        r'Grand\s*Total\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)',
+        r'Total\s*(?:Amt\.?|Amount)\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)',
+    ]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            try:
+                total_amount = float(m.group(1).replace(',', ''))
+                break
+            except ValueError:
+                pass
+
+    # ── Subtotal ──────────────────────────────────────────────────────────────
+    subtotal = None
+    m = re.search(r'(?:Item\s*Total|Subtotal|Sub\s*Total)\s*[\r\n\s]+([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if m:
+        try:
+            subtotal = float(m.group(1).replace(',', ''))
+        except ValueError:
+            pass
+
+    # ── Delivery fee ──────────────────────────────────────────────────────────
+    delivery_fee = None
+    m = re.search(r'Delivery\s*(?:Fee|Charge)\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if m:
+        try:
+            delivery_fee = float(m.group(1).replace(',', ''))
+        except ValueError:
+            pass
+
+    # ── Taxes ─────────────────────────────────────────────────────────────────
+    taxes = None
+    m = re.search(r'(?:Taxes|GST\s*Total)\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if m:
+        try:
+            taxes = float(m.group(1).replace(',', ''))
+        except ValueError:
+            pass
+
+    # ── Items ─────────────────────────────────────────────────────────────────
+    items: list[BillItem] = []
+
+    # Strategy 1: GST tabular format — anchor on 8-digit HSN code.
+    # Row pattern: <MRP>  <HSN8>  <Qty>  <UnitRate>  <Disc%>  <TaxableAmt> ...
+    # Item name is the text between the SR number and the MRP on the same line.
+    header_words = {'description', 'item', 'hsn', 'qty', 'rate', 'disc',
+                    'taxable', 'cgst', 'sgst', 'cess', 'unit', 'mrp', 'rsp',
+                    'sr', 'no', 'amt', 'supply'}
+    for m in re.finditer(
+        r'([\d.]+)\s+'       # MRP / RSP
+        r'(\d{7,8})\s+'      # HSN code (7-8 digits)
+        r'(\d+)\s+'          # Qty
+        r'([\d.]+)\s+'       # Unit rate (Product Rate)
+        r'[\d.]+%\s+'        # Discount %
+        r'([\d.]+)',          # Taxable amount
+        text,
+    ):
+        mrp_pos   = m.start()
+        qty       = float(m.group(3))
+        unit_price = float(m.group(4))
+        taxable   = float(m.group(5))
+
+        # The item name sits in the text before the MRP on this row.
+        # Walk back to the nearest SR number (\n<digits>\n or start of item block).
+        prefix = text[:mrp_pos]
+        name_m = re.search(r'(?:^|\n)\s*(\d+)\s*\n(.+?)$', prefix, re.DOTALL)
+        if name_m:
+            raw_name = name_m.group(2)
+        else:
+            # Fallback: take up to 80 chars before MRP
+            raw_name = prefix[-80:]
+
+        # Flatten multiline name, strip table header noise
+        name = re.sub(r'\s+', ' ', raw_name).strip()
+        name_lower = name.lower()
+        if any(w == tok for tok in name_lower.split() for w in header_words):
+            name = ' '.join(
+                tok for tok in name.split()
+                if tok.lower() not in header_words
+            ).strip()
+
+        if not name or len(name) < 2:
+            continue
+
+        items.append(BillItem(
+            name=name,
+            quantity=qty,
+            unit_price=unit_price,
+            total_price=taxable,
+        ))
+
+    # Strategy 2: "- Item ×qty: ₹price" narrative style (Swiggy/Zomato receipts)
+    if not items:
+        for m in re.finditer(
+            r'[-•]\s*(.+?)\s*[x×]\s*(\d+)\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)',
+            text, re.IGNORECASE,
+        ):
+            try:
+                items.append(BillItem(
+                    name=m.group(1).strip(),
+                    quantity=float(m.group(2)),
+                    unit_price=None,
+                    total_price=float(m.group(3).replace(',', '')),
+                ))
+            except ValueError:
+                pass
+
+    data = ExtractedBillData(
+        platform=platform,
+        order_id=order_id,
+        order_date=order_date,
+        merchant_name=merchant_name,
+        total_amount=total_amount,
+        subtotal=subtotal,
+        delivery_fee=delivery_fee,
+        discount=None,
+        taxes=taxes,
+        items=items,
+        currency="INR",
+        raw_text_snippet=ocr_text[:200],
+    )
+    return ParseResult(passed=True, data=data)

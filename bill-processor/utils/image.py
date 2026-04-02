@@ -1,7 +1,10 @@
 import hashlib
+import logging
 import imagehash
 from PIL import Image
 import io
+
+logger = logging.getLogger(__name__)
 
 
 def compute_sha256(file_bytes: bytes) -> str:
@@ -15,8 +18,14 @@ def compute_phash(file_bytes: bytes) -> str:
     Catches same bill with minor edits (crop, colour, brightness tweak).
     Returns a 16-char hex string. Hamming distance ≤ 8 = near-duplicate.
     """
-    img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-    return str(imagehash.phash(img, hash_size=8))
+    try:
+        img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        result = str(imagehash.phash(img, hash_size=8))
+        logger.info(f"phash computed: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"phash failed ({type(e).__name__}): {e}")
+        raise
 
 
 def bytes_to_cv2(file_bytes: bytes):

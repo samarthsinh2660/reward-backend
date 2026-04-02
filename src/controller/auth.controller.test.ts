@@ -18,6 +18,8 @@ const mockCreateAuthToken    = jest.fn<any>().mockReturnValue('mock_access_token
 const mockCreateRefreshToken = jest.fn<any>().mockReturnValue('mock_refresh_token');
 const mockDecodeRefreshToken = jest.fn<any>().mockReturnValue({ id: 1, is_admin: false, phone: '919876543210' });
 const mockBcryptCompare      = jest.fn<any>();
+// MSG91 token verification — default to valid so existing tests pass unchanged
+const mockVerifyMsg91Token   = jest.fn<any>().mockResolvedValue(true);
 
 jest.unstable_mockModule('../repositories/user.repository.ts', () => ({
     UserRepository: mockUserRepository,
@@ -31,6 +33,10 @@ jest.unstable_mockModule('../utils/jwt.ts', () => ({
 
 jest.unstable_mockModule('bcryptjs', () => ({
     default: { compare: mockBcryptCompare, hash: jest.fn<any>() },
+}));
+
+jest.unstable_mockModule('../services/msg91.service.ts', () => ({
+    verifyMsg91Token: mockVerifyMsg91Token,
 }));
 
 const { verifyOtp, onboardUser, getMe, loginAdmin, refreshAccessToken } =
@@ -64,7 +70,7 @@ describe('verifyOtp', () => {
     it('returns JWT for an existing active user', async () => {
         mockUserRepository.findByPhone.mockResolvedValue(ok(makeUser({ is_onboarded: 1 })));
 
-        const result = await verifyOtp('919876543210');
+        const result = await verifyOtp('919876543210', 'mock_msg91_token');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) {
@@ -78,7 +84,7 @@ describe('verifyOtp', () => {
         mockUserRepository.findByPhone.mockResolvedValue(ok(null));
         mockUserRepository.create.mockResolvedValue(ok(makeUser()));
 
-        const result = await verifyOtp('919876543210');
+        const result = await verifyOtp('919876543210', 'mock_msg91_token');
 
         expect(mockUserRepository.create).toHaveBeenCalledWith('919876543210');
         expect(result.isOk()).toBe(true);
@@ -87,7 +93,7 @@ describe('verifyOtp', () => {
     it('strips leading + from phone before lookup', async () => {
         mockUserRepository.findByPhone.mockResolvedValue(ok(makeUser()));
 
-        await verifyOtp('+919876543210');
+        await verifyOtp('+919876543210', 'mock_msg91_token');
 
         expect(mockUserRepository.findByPhone).toHaveBeenCalledWith('919876543210');
     });
@@ -95,16 +101,27 @@ describe('verifyOtp', () => {
     it('returns USER_BANNED for inactive users', async () => {
         mockUserRepository.findByPhone.mockResolvedValue(ok(makeUser({ is_active: 0 })));
 
-        const result = await verifyOtp('919876543210');
+        const result = await verifyOtp('919876543210', 'mock_msg91_token');
 
         expect(result.isErr()).toBe(true);
         if (result.isErr()) expect(result.error).toBe(ERRORS.USER_BANNED);
     });
 
+    it('returns INVALID_OTP when MSG91 token verification fails', async () => {
+        mockVerifyMsg91Token.mockResolvedValueOnce(false);
+
+        const result = await verifyOtp('919876543210', 'bad_token');
+
+        expect(result.isErr()).toBe(true);
+        if (result.isErr()) expect(result.error).toBe(ERRORS.INVALID_OTP);
+        // Must not touch the DB if token is invalid
+        expect(mockUserRepository.findByPhone).not.toHaveBeenCalled();
+    });
+
     it('propagates database errors', async () => {
         mockUserRepository.findByPhone.mockResolvedValue(err(ERRORS.DATABASE_ERROR));
 
-        const result = await verifyOtp('919876543210');
+        const result = await verifyOtp('919876543210', 'mock_msg91_token');
 
         expect(result.isErr()).toBe(true);
         if (result.isErr()) expect(result.error).toBe(ERRORS.DATABASE_ERROR);

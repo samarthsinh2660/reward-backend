@@ -1,7 +1,10 @@
+import logging
 import cv2
 
 from config import MIN_SHARPNESS, MIN_BRIGHTNESS, MAX_BRIGHTNESS, MIN_WIDTH_PX, MIN_HEIGHT_PX
 from utils.image import bytes_to_cv2
+
+logger = logging.getLogger(__name__)
 
 
 class QualityResult:
@@ -19,6 +22,7 @@ def check_quality(file_bytes: bytes) -> QualityResult:
     img = bytes_to_cv2(file_bytes)
 
     if img is None:
+        logger.error("Quality check: could not decode image bytes with OpenCV")
         return QualityResult(False, "quality_low", {"error": "Could not decode image"})
 
     h, w = img.shape[:2]
@@ -49,7 +53,6 @@ def check_quality(file_bytes: bytes) -> QualityResult:
             {"error": f"Image is overexposed (brightness: {brightness:.1f}). Avoid flash or direct light."},
         )
 
-    return QualityResult(
-        True, "",
-        {"sharpness": round(sharpness, 2), "brightness": round(brightness, 2), "resolution": f"{w}x{h}"},
-    )
+    detail = {"sharpness": round(sharpness, 2), "brightness": round(brightness, 2), "resolution": f"{w}x{h}"}
+    logger.info(f"Quality OK: {detail}")
+    return QualityResult(True, "", detail)

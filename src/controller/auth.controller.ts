@@ -6,6 +6,7 @@ import { UserView, OnboardUserData, toUserView } from '../models/user.model.ts';
 import { createAuthToken, createRefreshToken, decodeRefreshToken, TokenData } from '../utils/jwt.ts';
 import { LoginResponse } from '../types/login.ts';
 import { createLogger } from '../utils/logger.ts';
+import { verifyMsg91Token, sendOtpViaMSG91, verifyOtpViaMSG91 } from '../services/msg91.service.ts';
 
 const logger = createLogger('@auth.controller');
 
@@ -20,11 +21,69 @@ function generateReferralCode(userId: number): string {
     return `${code}${userId}`;
 }
 
-// Called after MSG91 OTP is verified client-side.
-// Finds or creates the user, returns JWT + user view.
-export const verifyOtp = async (
+// ─── REST OTP flow (no native SDK) ───────────────────────────────────────────
+
+// POST /auth/send-otp — triggers MSG91 to send SMS OTP
+export const sendOtp = async (
     phone: string
+): Promise<Result<{ message: string }, RequestError>> => {
+    try {
+        await sendOtpViaMSG91(phone);
+        return ok({ message: 'OTP sent' });
+    } catch (e: any) {
+        return err(ERRORS.OTP_SEND_FAILED);
+    }
+};
+
+// POST /auth/verify-otp — verifies OTP entered by user, then finds/creates user
+export const verifyOtpDirect = async (
+    phone: string,
+    otp: string
 ): Promise<Result<LoginResponse<UserView>, RequestError>> => {
+    const valid = await verifyOtpViaMSG91(phone, otp);
+    if (!valid) return err(ERRORS.INVALID_OTP);
+
+    const normalizedPhone = phone.startsWith('+') ? phone.slice(1) : phone;
+
+    let userResult = await UserRepository.findByPhone(normalizedPhone);
+    if (userResult.isErr()) return err(userResult.error);
+
+    let user = userResult.value;
+    if (user && user.is_active === 0) return err(ERRORS.USER_BANNED);
+
+    if (!user) {
+        const created = await UserRepository.create(normalizedPhone);
+        if (created.isErr()) return err(created.error);
+        user = created.value;
+    }
+
+    const tokenData: TokenData = { id: user.id, is_admin: user.role === 'admin', phone: user.phone };
+    const token         = createAuthToken(tokenData);
+    const refresh_token = createRefreshToken(tokenData);
+
+    logger.info(`User ${user.id} authenticated via REST OTP (phone: ${normalizedPhone})`);
+    const userView = toUserView(user);
+    return ok({
+        token,
+        refresh_token,
+        phone: userView.phone,
+        is_onboarded: userView.is_onboarded,
+        user: userView,
+    });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Called after MSG91 OTP is verified client-side.
+// Validates the MSG91 access token server-side, then finds or creates the user.
+export const verifyOtp = async (
+    phone: string,
+    msg91AccessToken: string
+): Promise<Result<LoginResponse<UserView>, RequestError>> => {
+    // Verify with MSG91 API — rejects if token is forged or already used
+    const tokenValid = await verifyMsg91Token(msg91AccessToken);
+    if (!tokenValid) return err(ERRORS.INVALID_OTP);
+
     // Normalize phone: ensure it has country code prefix stored consistently
     const normalizedPhone = phone.startsWith('+') ? phone.slice(1) : phone;
 
@@ -55,7 +114,14 @@ export const verifyOtp = async (
 
     logger.info(`User ${user.id} authenticated (phone: ${normalizedPhone})`);
 
-    return ok({ ...toUserView(user), token, refresh_token });
+    const userView = toUserView(user);
+    return ok({
+        token,
+        refresh_token,
+        phone: userView.phone,
+        is_onboarded: userView.is_onboarded,
+        user: userView,
+    });
 };
 
 // Called once after OTP verify when is_onboarded is false.

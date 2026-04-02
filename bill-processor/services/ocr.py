@@ -1,8 +1,13 @@
 import time
 
 from google.cloud import vision
+import base64
+import io
+import logging
 
-from config import OCR_MIN_CONFIDENCE
+import config
+
+logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 3
 _RETRY_DELAY = 1.5   # seconds between attempts
@@ -16,7 +21,7 @@ class OCRResult:
         self.message = message
 
 
-def run_ocr(file_bytes: bytes) -> OCRResult:
+def run_ocr(file_bytes: bytes, content_type: str = "") -> OCRResult:
     """
     Send image to Google Vision API and extract raw text.
     GOOGLE_APPLICATION_CREDENTIALS env var points to the service account JSON.
