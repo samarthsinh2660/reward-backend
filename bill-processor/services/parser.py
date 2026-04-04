@@ -23,11 +23,18 @@ def _get_client() -> OpenAI:
 
 
 SYSTEM_PROMPT = """You are a bill data extraction assistant for an Indian food delivery cashback app.
+This app only supports Zepto and Blinkit bills. Your top priority is to correctly identify whether
+the bill is from Zepto or Blinkit. Look for platform-specific identifiers:
+- Zepto: brand name "Zepto", GSTIN 27AAHCZ6029R1ZN, zepto.com domain, "Kiranakart Technologies"
+- Blinkit: brand name "Blinkit", "Grofers", blinkit.com domain, "Blink Commerce"
+If the bill is from any other platform (Swiggy, Zomato, Amazon, etc.), still extract all data
+accurately but set platform to that platform's name — the app will reject it downstream.
+
 Extract structured data from food delivery bill text (Swiggy, Zomato, Zepto, Blinkit).
 
 Return ONLY valid JSON matching this exact schema — no markdown, no explanation:
 {
-  "platform": "the delivery platform name in lowercase (e.g. swiggy, zomato, zepto, blinkit, amazon, flipkart, dunzo, etc.) or \"unknown\" if completely unidentifiable",
+  "platform": "the delivery platform name in lowercase (zepto, blinkit, swiggy, zomato, amazon, etc.) or \"unknown\" if completely unidentifiable",
   "order_id": "string or null",
   "order_date": "YYYY-MM-DD or null",
   "merchant_name": "string or null",

@@ -147,10 +147,6 @@ export type ChestOpenResponse = {
 
 // ── Converters ────────────────────────────────────────────────────────────────
 
-export function toPlatform(raw: string | null | undefined): BillPlatform {
-    return (raw ?? 'unknown').toLowerCase().trim() || 'unknown';
-}
-
 export function isSupportedPlatform(platform: string | null): platform is SupportedPlatform {
     return (SUPPORTED_PLATFORMS as readonly string[]).includes(platform ?? '');
 }

@@ -11,8 +11,9 @@ import { uploadBillImage } from '../services/gcp-storage.service.ts';
 import { drawReward } from './reward.controller.ts';
 import {
     BillView, BillUploadResponse, ChestOpenResponse,
-    BillStatus, toBillView, toPlatform,
+    BillStatus, toBillView,
 } from '../models/bill.model.ts';
+import { toPlatform } from '../utils/bill.utils.ts';
 import { Paginated } from '../types/pagination.ts';
 
 const logger = createLogger('@bill.controller');

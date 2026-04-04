@@ -20,6 +20,8 @@ const mockDecodeRefreshToken = jest.fn<any>().mockReturnValue({ id: 1, is_admin:
 const mockBcryptCompare      = jest.fn<any>();
 // MSG91 token verification — default to valid so existing tests pass unchanged
 const mockVerifyMsg91Token   = jest.fn<any>().mockResolvedValue(true);
+const mockSendOtpViaMSG91    = jest.fn<any>().mockResolvedValue(undefined);
+const mockVerifyOtpViaMSG91  = jest.fn<any>().mockResolvedValue(true);
 
 jest.unstable_mockModule('../repositories/user.repository.ts', () => ({
     UserRepository: mockUserRepository,
@@ -36,7 +38,9 @@ jest.unstable_mockModule('bcryptjs', () => ({
 }));
 
 jest.unstable_mockModule('../services/msg91.service.ts', () => ({
-    verifyMsg91Token: mockVerifyMsg91Token,
+    verifyMsg91Token:   mockVerifyMsg91Token,
+    sendOtpViaMSG91:    mockSendOtpViaMSG91,
+    verifyOtpViaMSG91:  mockVerifyOtpViaMSG91,
 }));
 
 const { verifyOtp, onboardUser, getMe, loginAdmin, refreshAccessToken } =

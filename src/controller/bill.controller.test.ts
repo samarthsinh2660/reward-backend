@@ -174,7 +174,8 @@ function makeProcessorSuccess(overrides: Record<string, unknown> = {}) {
             status: 'success',
             phash: 'abcdef123456',
             extracted_data: {
-                platform: 'swiggy',
+                platform: 'zepto',
+                is_supported_platform: true,
                 order_id: 'ORD-001',
                 total_amount: 250.00,
                 order_date: '2024-06-01',
