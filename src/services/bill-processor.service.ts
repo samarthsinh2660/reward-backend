@@ -8,10 +8,12 @@ const logger = createLogger('@bill-processor.service');
 // ── Response types from FastAPI /process endpoint ─────────────────────────────
 
 export type BillExtractedData = {
-    platform: BillPlatform | null;
+    platform: string | null;
+    is_supported_platform: boolean;
     order_id: string | null;
     order_date: string | null;          // YYYY-MM-DD
     merchant_name: string | null;
+    seller_gstin: string | null;
     total_amount: number | null;
     subtotal: number | null;
     delivery_fee: number | null;
@@ -19,11 +21,16 @@ export type BillExtractedData = {
     taxes: number | null;
     items: BillLineItem[];
     currency: string;
+    delivery_city: string | null;
+    delivery_state: string | null;
+    delivery_pincode: string | null;
+    place_of_supply: string | null;
     raw_text_snippet: string | null;
 };
 
 export type BillLineItem = {
     name: string;
+    hsn_code: string | null;
     quantity: number | null;
     unit_price: number | null;
     total_price: number | null;

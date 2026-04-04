@@ -2,6 +2,9 @@
 const config = {
     preset: 'ts-jest/presets/default-esm',
     testEnvironment: 'node',
+    // Run test files serially — repository tests each spin up a MySQL container
+    // via testcontainers; running them in parallel starves Docker Desktop on Windows
+    maxWorkers: 1,
     extensionsToTreatAsEsm: ['.ts'],
     moduleNameMapper: {
         '^(\\.{1,2}/.*)\\.ts$': '$1',

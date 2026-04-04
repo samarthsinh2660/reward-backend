@@ -7,8 +7,12 @@ export const BILL_TABLE = 'bills';
 export const BILL_STATUSES = ['queued', 'pending', 'processing', 'verified', 'rejected', 'failed'] as const;
 export type BillStatus = typeof BILL_STATUSES[number];
 
-export const BILL_PLATFORMS = ['swiggy', 'zomato', 'zepto', 'blinkit', 'unknown'] as const;
-export type BillPlatform = typeof BILL_PLATFORMS[number];
+// Supported platforms — used for reward eligibility checks
+export const SUPPORTED_PLATFORMS = ['swiggy', 'zomato', 'zepto', 'blinkit'] as const;
+export type SupportedPlatform = typeof SUPPORTED_PLATFORMS[number];
+
+// platform stored in DB is a free string — any detected name or "unknown"
+export type BillPlatform = string;
 
 // ── CREATE TABLE (mirrors 01-tables.sql exactly — do not edit, update SQL first) ──
 
@@ -143,11 +147,8 @@ export type ChestOpenResponse = {
 
 // ── Converters ────────────────────────────────────────────────────────────────
 
-export function toPlatform(raw: string | null | undefined): BillPlatform {
-    const value = raw ?? 'unknown';
-    return (BILL_PLATFORMS as readonly string[]).includes(value)
-        ? value as BillPlatform
-        : 'unknown';
+export function isSupportedPlatform(platform: string | null): platform is SupportedPlatform {
+    return (SUPPORTED_PLATFORMS as readonly string[]).includes(platform ?? '');
 }
 
 export function toBillView(row: Bill): BillView {

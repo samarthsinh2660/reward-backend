@@ -5,7 +5,7 @@ import { USER_TABLE, CREATE_USER_TABLE_QUERY } from '../models/user.model.ts';
 import { BILL_TABLE, CREATE_BILL_TABLE_QUERY } from '../models/bill.model.ts';
 import { ERRORS } from '../utils/error.ts';
 
-jest.setTimeout(60000);
+jest.setTimeout(180000);
 
 // ─── CONTAINER + POOL SETUP ──────────────────────────────────────────────────
 
@@ -88,6 +88,7 @@ function makeProcessedData(overrides: Record<string, unknown> = {}) {
 beforeAll(async () => {
     container = await new GenericContainer('mysql:8.4')
         .withExposedPorts(3306)
+        .withStartupTimeout(180000)
         .withEnvironment({
             MYSQL_ROOT_PASSWORD: 'root',
             MYSQL_DATABASE:      'test_billpay',
@@ -122,6 +123,137 @@ afterAll(async () => {
 });
 
 beforeEach(resetTables);
+
+// ─── createQueued ─────────────────────────────────────────────────────────────
+
+describe('BillRepository.createQueued', () => {
+    it('inserts a minimal row with status=queued', async () => {
+        const result = await BillRepository.createQueued({ user_id: 10, sha256_hash: 'a'.repeat(64) });
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) {
+            expect(result.value.id).toBe(1);
+            expect(result.value.user_id).toBe(10);
+            expect(result.value.sha256_hash).toBe('a'.repeat(64));
+            expect(result.value.status).toBe('queued');
+            expect(result.value.platform).toBeNull();
+            expect(result.value.reward_amount).toBeNull();
+        }
+    });
+
+    it('returns the saved row (not just the insert id)', async () => {
+        const result = await BillRepository.createQueued({ user_id: 10, sha256_hash: 'b'.repeat(64) });
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) {
+            expect(result.value.created_at).toBeInstanceOf(Date);
+        }
+    });
+});
+
+// ─── findStranded ─────────────────────────────────────────────────────────────
+
+describe('BillRepository.findStranded', () => {
+    it('returns bills with status queued or processing', async () => {
+        await BillRepository.createQueued({ user_id: 10, sha256_hash: 'a'.repeat(64) });
+        await BillRepository.create(makeBillData({ status: 'verified', sha256_hash: 'b'.repeat(64), phash: 'ph2' }) as any);
+
+        const result = await BillRepository.findStranded();
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) {
+            expect(result.value).toHaveLength(1);
+            expect(result.value[0].status).toBe('queued');
+        }
+    });
+
+    it('returns empty array when no stranded bills', async () => {
+        await BillRepository.create(makeBillData({ status: 'verified' }) as any);
+
+        const result = await BillRepository.findStranded();
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) expect(result.value).toHaveLength(0);
+    });
+
+    it('returns results in ascending id order', async () => {
+        await BillRepository.createQueued({ user_id: 10, sha256_hash: 'a'.repeat(64) });
+        await BillRepository.createQueued({ user_id: 10, sha256_hash: 'b'.repeat(64) });
+
+        const result = await BillRepository.findStranded();
+
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) {
+            expect(result.value[0].id).toBeLessThan(result.value[1].id);
+        }
+    });
+});
+
+// ─── updateProcessed ──────────────────────────────────────────────────────────
+
+describe('BillRepository.updateProcessed', () => {
+    it('fills in all extracted fields on a queued bill', async () => {
+        const queued = await BillRepository.createQueued({ user_id: 10, sha256_hash: 'a'.repeat(64) });
+        const id = (queued as any).value.id;
+
+        await BillRepository.updateProcessed(id, {
+            phash:            'abc123',
+            platform:         'zepto',
+            order_id:         'ORD-Z01',
+            total_amount:     199.0,
+            bill_date:        '2024-07-15',
+            status:           'verified',
+            rejection_reason: null,
+            extracted_data:   { platform: 'zepto', total_amount: 199 },
+            fraud_score:      5,
+            fraud_signals:    { fraud_score: 5 },
+            file_url:         'https://storage.example.com/bill.jpg',
+            reward_amount:    20.0,
+            chest_decoys:     [30.0, 50.0],
+        });
+
+        const result = await BillRepository.findById(id);
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) {
+            expect(result.value!.status).toBe('verified');
+            expect(result.value!.platform).toBe('zepto');
+            expect(result.value!.order_id).toBe('ORD-Z01');
+            expect(Number(result.value!.total_amount)).toBe(199.0);
+            expect(Number(result.value!.reward_amount)).toBe(20.0);
+            expect(result.value!.chest_decoys).toEqual([30.0, 50.0]);
+            expect(result.value!.file_url).toBe('https://storage.example.com/bill.jpg');
+        }
+    });
+
+    it('can set status=pending with null reward fields', async () => {
+        const queued = await BillRepository.createQueued({ user_id: 10, sha256_hash: 'a'.repeat(64) });
+        const id = (queued as any).value.id;
+
+        await BillRepository.updateProcessed(id, {
+            phash:            'abc123',
+            platform:         'blinkit',
+            order_id:         null,
+            total_amount:     null,
+            bill_date:        null,
+            status:           'pending',
+            rejection_reason: null,
+            extracted_data:   null,
+            fraud_score:      60,
+            fraud_signals:    null,
+            file_url:         'https://storage.example.com/bill.jpg',
+            reward_amount:    null,
+            chest_decoys:     null,
+        });
+
+        const result = await BillRepository.findById(id);
+        expect(result.isOk()).toBe(true);
+        if (result.isOk()) {
+            expect(result.value!.status).toBe('pending');
+            expect(result.value!.reward_amount).toBeNull();
+            expect(result.value!.chest_decoys).toBeNull();
+        }
+    });
+});
 
 // ─── create ───────────────────────────────────────────────────────────────────
 

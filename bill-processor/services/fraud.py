@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # ── Scoring weights ───────────────────────────────────────────────────────────
 TAMPERING_POINTS        = 35   # added when confidence > TAMPERING_CONFIDENCE_THRESHOLD
 
-RULE_UNKNOWN_PLATFORM   = 20   # platform not in ALLOWED_PLATFORMS
+RULE_UNKNOWN_PLATFORM   = 20   # platform completely unidentifiable (None or "unknown") — named-but-unsupported platforms are rejected by Node.js before reaching here
 RULE_NO_ORDER_ID        = 10   # order_id missing
 RULE_NO_MERCHANT        = 10   # merchant_name missing
 RULE_ZERO_TOTAL         = 20   # total_amount is null, zero, or negative
@@ -36,6 +36,7 @@ def compute_fraud_signals(
     rule_points = 0
 
     if extracted.platform in (None, "unknown"):
+        # Truly unidentifiable — not even a recognisable brand name
         violations.append("unknown_platform")
         rule_points += RULE_UNKNOWN_PLATFORM
 

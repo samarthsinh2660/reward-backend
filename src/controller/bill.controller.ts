@@ -11,8 +11,9 @@ import { uploadBillImage } from '../services/gcp-storage.service.ts';
 import { drawReward } from './reward.controller.ts';
 import {
     BillView, BillUploadResponse, ChestOpenResponse,
-    BillStatus, toBillView, toPlatform,
+    BillStatus, toBillView,
 } from '../models/bill.model.ts';
+import { toPlatform } from '../utils/bill.utils.ts';
 import { Paginated } from '../types/pagination.ts';
 
 const logger = createLogger('@bill.controller');
@@ -113,6 +114,18 @@ export async function processBillInBackground(
 
     const { extracted_data, phash, fraud_signals } = processorData;
     const fraudScore = fraud_signals.fraud_score;
+
+    // Unsupported platform — bill is real but we don't support it yet
+    if (!extracted_data.is_supported_platform) {
+        const detectedPlatform = extracted_data.platform ?? 'unknown';
+        await BillRepository.updateStatus(
+            billId,
+            'rejected',
+            `unsupported_platform:${detectedPlatform}`
+        );
+        logger.info(`Bill ${billId} rejected — unsupported platform: ${detectedPlatform}`);
+        return;
+    }
 
     // pHash near-duplicate check (exclude self — this bill already exists in DB as queued/processing)
     const phashCheck = await BillRepository.findByPhash(phash);

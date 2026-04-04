@@ -4,7 +4,7 @@ import { GenericContainer } from 'testcontainers';
 import { USER_TABLE, CREATE_USER_TABLE_QUERY } from '../models/user.model.ts';
 import { ERRORS } from '../utils/error.ts';
 
-jest.setTimeout(60000); // containers need time to start
+jest.setTimeout(180000); // containers need time to start
 
 // ─── CONTAINER + POOL SETUP ──────────────────────────────────────────────────
 
@@ -52,6 +52,7 @@ async function resetTable() {
 beforeAll(async () => {
     container = await new GenericContainer('mysql:8.4')
         .withExposedPorts(3306)
+        .withStartupTimeout(180000)
         .withEnvironment({
             MYSQL_ROOT_PASSWORD: 'root',
             MYSQL_DATABASE: 'test_billpay',
