@@ -438,8 +438,9 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
     # ── Seller GSTIN ──────────────────────────────────────────────────────────
     # Only validates format (proves seller is GST-registered). Any valid GSTIN found
     # in the text is sufficient — no platform registry check.
+    # Note: no \b at end — pypdf often concatenates GSTIN with adjacent text (e.g. "...Z2FSSAI:")
     seller_gstin = None
-    all_gstins = re.findall(r'\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b', text)
+    all_gstins = re.findall(r'(?<![A-Z0-9])([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])(?=[^A-Z0-9]|$)', text)
     if all_gstins:
         seller_gstin = all_gstins[0]
 
@@ -487,50 +488,40 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
     # ── Items ─────────────────────────────────────────────────────────────────
     items: list[BillItem] = []
 
-    # Strategy 1: GST tabular format — anchor on 8-digit HSN code.
-    # Row pattern: <MRP>  <HSN8>  <Qty>  <UnitRate>  <Disc%>  <TaxableAmt> ...
-    # Item name is the text between the SR number and the MRP on the same line.
-    header_words = {'description', 'item', 'hsn', 'qty', 'rate', 'disc',
-                    'taxable', 'cgst', 'sgst', 'cess', 'unit', 'mrp', 'rsp',
-                    'sr', 'no', 'amt', 'supply'}
+    # Strategy 1: GST tabular format — full row regex.
+    # Captures: SR#  ItemName  MRP  HSN(7-8digits)  Qty  UnitRate  Disc%  Taxable
+    # Non-greedy (.+?) stops at the first valid MRP+HSN pair, so each match is one row.
+    seen_hsn: set[str] = set()
     for m in re.finditer(
-        r'([\d.]+)\s+'       # MRP / RSP
-        r'(\d{7,8})\s+'      # HSN code (7-8 digits)
-        r'(\d+)\s+'          # Qty
-        r'([\d.]+)\s+'       # Unit rate (Product Rate)
-        r'[\d.]+%\s+'        # Discount %
-        r'([\d.]+)',          # Taxable amount
+        r'(?:^|\n|(?<=\s))'
+        r'(\d{1,3})\s+'          # SR number
+        r'(.+?)'                  # item name (non-greedy — stops at first valid MRP+HSN)
+        r'\s+([\d.]+)'            # MRP
+        r'\s+(\d{7,8})'           # HSN code (7-8 digits) — very distinctive
+        r'\s+(\d+)'               # Qty
+        r'\s+([\d.]+)'            # Unit rate
+        r'\s+[\d.]+%'             # Discount %
+        r'\s+([\d.]+)',            # Taxable amount
         text,
+        re.DOTALL,
     ):
-        mrp_pos   = m.start()
-        qty       = float(m.group(3))
-        unit_price = float(m.group(4))
-        taxable   = float(m.group(5))
+        hsn = m.group(4)
+        if hsn in seen_hsn:        # skip duplicate row matches
+            continue
+        seen_hsn.add(hsn)
 
-        # The item name sits in the text before the MRP on this row.
-        # Walk back to the nearest SR number (\n<digits>\n or start of item block).
-        prefix = text[:mrp_pos]
-        name_m = re.search(r'(?:^|\n)\s*(\d+)\s*\n(.+?)$', prefix, re.DOTALL)
-        if name_m:
-            raw_name = name_m.group(2)
-        else:
-            # Fallback: take up to 80 chars before MRP
-            raw_name = prefix[-80:]
+        raw_name = m.group(2)
+        qty        = float(m.group(5))
+        unit_price = float(m.group(6))
+        taxable    = float(m.group(7))
 
-        # Flatten multiline name, strip table header noise
         name = re.sub(r'\s+', ' ', raw_name).strip()
-        name_lower = name.lower()
-        if any(w == tok for tok in name_lower.split() for w in header_words):
-            name = ' '.join(
-                tok for tok in name.split()
-                if tok.lower() not in header_words
-            ).strip()
-
         if not name or len(name) < 2:
             continue
 
         items.append(BillItem(
             name=name,
+            hsn_code=hsn,
             quantity=qty,
             unit_price=unit_price,
             total_price=taxable,
