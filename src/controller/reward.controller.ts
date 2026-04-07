@@ -85,7 +85,10 @@ export function drawReward(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function _randomBetween(min: number, max: number): number {
-    return min + Math.random() * (max - min);
+    // mysql2 returns DECIMAL columns as strings — coerce to number defensively
+    const lo = Number(min);
+    const hi = Number(max);
+    return lo + Math.random() * (hi - lo);
 }
 
 function _round(value: number): number {

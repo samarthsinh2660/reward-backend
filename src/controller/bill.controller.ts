@@ -178,8 +178,8 @@ export async function processBillInBackground(
         return;
     }
 
-    // Upload image to GCP (only verified and pending reach here)
-    const uploadResult = await uploadBillImage(fileBuffer, userId);
+    // Upload file to GCP (only verified and pending reach here)
+    const uploadResult = await uploadBillImage(fileBuffer, userId, fileMimetype);
     if (uploadResult.isErr()) {
         logger.error(`Bill ${billId}: GCP upload failed`, uploadResult.error);
         await BillRepository.updateStatus(billId, 'failed', 'Image upload failed');

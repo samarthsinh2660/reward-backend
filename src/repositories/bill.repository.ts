@@ -167,7 +167,7 @@ class BillRepositoryImpl implements IBillRepository {
         try {
             const [rows] = await db.query<Bill[]>(
                 `SELECT id, user_id, sha256_hash, status FROM ${BILL_TABLE}
-                 WHERE sha256_hash = ? AND status != 'failed'
+                 WHERE sha256_hash = ? AND status NOT IN ('failed', 'rejected')
                  LIMIT 1`,
                 [hash]
             );
@@ -181,7 +181,9 @@ class BillRepositoryImpl implements IBillRepository {
     async findByPhash(phash: string): Promise<Result<Bill | null, RequestError>> {
         try {
             const [rows] = await db.query<Bill[]>(
-                `SELECT id, user_id, phash, status FROM ${BILL_TABLE} WHERE phash = ? LIMIT 1`,
+                `SELECT id, user_id, phash, status FROM ${BILL_TABLE}
+                 WHERE phash = ? AND status != 'failed'
+                 LIMIT 1`,
                 [phash]
             );
             return ok(rows.length > 0 ? rows[0] : null);
@@ -199,7 +201,8 @@ class BillRepositoryImpl implements IBillRepository {
         try {
             const [rows] = await db.query<Bill[]>(
                 `SELECT id, user_id, order_id, platform, status FROM ${BILL_TABLE}
-                 WHERE order_id = ? AND platform = ? AND user_id != ? AND status != 'failed'
+                 WHERE order_id = ? AND platform = ? AND user_id != ?
+                 AND status NOT IN ('failed', 'rejected')
                  LIMIT 1`,
                 [orderId, platform, excludeUserId]
             );

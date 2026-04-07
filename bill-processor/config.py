@@ -42,5 +42,16 @@ ALLOWED_PLATFORMS: frozenset[str] = frozenset({
     "blinkit",
 })
 
+# ── FBO email domain registry ─────────────────────────────────────────────────
+# Known support email domains for each supported platform.
+# A bill claiming to be from a platform but containing a different platform's
+# email domain is a strong spoofing signal.
+FBO_EMAIL_DOMAINS: dict[str, str] = {
+    "zepto":   "zeptonow.com",
+    "swiggy":  "swiggy.in",
+    "zomato":  "zomato.com",
+    "blinkit": "blinkit.com",
+}
+
 # ── Fraud score thresholds ────────────────────────────────────────────────────
 TAMPERING_CONFIDENCE_THRESHOLD: float = 0.70

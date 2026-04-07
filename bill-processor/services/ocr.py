@@ -1,16 +1,17 @@
 import time
+import io
 
 from google.cloud import vision
-import base64
-import io
 import logging
 
 import config
+from config import OCR_MIN_CONFIDENCE
 
 logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 3
 _RETRY_DELAY = 1.5   # seconds between attempts
+_PDF_TYPES = {"application/pdf", "application/octet-stream"}
 
 
 class OCRResult:
@@ -21,13 +22,37 @@ class OCRResult:
         self.message = message
 
 
+def _extract_pdf_text(file_bytes: bytes) -> OCRResult:
+    """Extract embedded text from a PDF using pypdf — no API call needed."""
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+        pages_text = []
+        for page in reader.pages:
+            t = page.extract_text()
+            if t:
+                pages_text.append(t)
+        full_text = "\n".join(pages_text).strip()
+        if not full_text or len(full_text) < 20:
+            return OCRResult(
+                False, "", "ocr_failed",
+                "Could not extract text from PDF. The file may be a scanned image — please upload as a photo instead.",
+            )
+        logger.info(f"PDF text extraction OK — {len(full_text)} chars from {len(reader.pages)} page(s)")
+        return OCRResult(True, full_text)
+    except Exception as e:
+        logger.error(f"PDF text extraction failed ({type(e).__name__}): {e}")
+        return OCRResult(False, "", "ocr_failed", f"PDF read error: {e}")
+
+
 def run_ocr(file_bytes: bytes, content_type: str = "") -> OCRResult:
     """
-    Send image to Google Vision API and extract raw text.
-    GOOGLE_APPLICATION_CREDENTIALS env var points to the service account JSON.
-    Retries up to 3 times on transient errors before giving up.
-    Returns OCRResult with passed=True and full extracted text on success.
+    For PDFs: extract embedded text via pypdf (no Vision API).
+    For images: send to Google Vision API with up to 3 retries.
     """
+    if content_type.lower() in _PDF_TYPES:
+        return _extract_pdf_text(file_bytes)
+
     last_exception: Exception | None = None
 
     for attempt in range(1, _MAX_RETRIES + 1):

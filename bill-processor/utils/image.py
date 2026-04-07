@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 import imagehash
 from PIL import Image
 import io
@@ -26,6 +27,18 @@ def compute_phash(file_bytes: bytes) -> str:
     except Exception as e:
         logger.error(f"phash failed ({type(e).__name__}): {e}")
         raise
+
+
+def compute_text_phash(text: str) -> str:
+    """
+    Content-based phash for PDFs.
+    Normalises the extracted text (lowercase + collapsed whitespace) then SHA256s it.
+    Returns the first 16 hex chars — same length as imagehash phash output.
+    Two PDFs with identical invoice content produce the same hash even if the
+    file bytes differ (re-downloads, different PDF generators, metadata changes).
+    """
+    normalised = re.sub(r'\s+', ' ', text.lower()).strip()
+    return hashlib.sha256(normalised.encode()).hexdigest()[:16]
 
 
 def bytes_to_cv2(file_bytes: bytes):

@@ -7,11 +7,11 @@ from fastapi.responses import JSONResponse
 
 import config
 from models.schemas import ProcessSuccessResponse, ProcessFailResponse
-from utils.image import compute_sha256, compute_phash
+from utils.image import compute_sha256, compute_phash, compute_text_phash
 from services.quality import check_quality
 from services.ocr import run_ocr
-from services.parser import parse_bill
-from services.tampering import check_tampering
+from services.parser import parse_bill, parse_bill_pdf
+from services.tampering import check_tampering, TamperingResult
 from services.fraud import compute_fraud_signals
 
 logging.basicConfig(
@@ -96,11 +96,12 @@ async def process_bill(file: UploadFile = File(...)):
     image_hash = compute_sha256(file_bytes)
 
     if is_pdf:
-        phash = image_hash
-        logger.info(f"[2/6] PDF detected — skipping phash, sha256={image_hash[:16]}...")
+        # phash for PDFs is content-based — computed after OCR (text not available yet)
+        phash: str | None = None
+        logger.info(f"[2/6] PDF sha256={image_hash[:16]}... — content phash deferred to after OCR")
     else:
         phash = compute_phash(file_bytes)
-        logger.info(f"[2/6] Hashes computed — sha256={image_hash[:16]}... phash={phash}")
+        logger.info(f"[2/6] sha256={image_hash[:16]}... phash={phash}")
 
     # ── 3. Quality gate ───────────────────────────────────────────────────────
     if not is_pdf:
@@ -121,9 +122,18 @@ async def process_bill(file: UploadFile = File(...)):
         return _fail(400, ocr.reason, ocr.message)
     logger.info(f"[4/6] OCR OK — extracted {len(ocr.text)} chars")
 
+    # PDF content phash — computed from normalised extracted text.
+    # Catches re-downloaded copies of the same invoice (different file bytes, same content).
+    # Node.js findByPhash() will reject it as a near-duplicate before fraud scoring runs.
+    if is_pdf:
+        phash = compute_text_phash(ocr.text)
+        logger.info(f"[4/6] PDF content phash={phash}")
+
     # ── 5. Parsing ────────────────────────────────────────────────────────────
+    # PDFs: classify first (is this a real food delivery bill?) then regex extraction.
+    # Images: full OpenAI extraction (layout is unpredictable — regex not reliable).
     logger.info("[5/6] Running parser...")
-    parsed = parse_bill(ocr.text)
+    parsed = parse_bill_pdf(ocr.text) if is_pdf else parse_bill(ocr.text)
     if not parsed.passed:
         logger.error(f"[5/6] PARSE FAILED — reason={parsed.reason!r} message={parsed.message!r}")
         return _fail(400, parsed.reason, parsed.message)
@@ -135,7 +145,8 @@ async def process_bill(file: UploadFile = File(...)):
 
     # ── 6. Tampering + Fraud ──────────────────────────────────────────────────
     logger.info("[6/6] Running tampering detection and fraud scoring...")
-    tampering = check_tampering(file_bytes)
+    # PDFs have no JPEG/EXIF structure — skip tampering check (PIL cannot open PDFs)
+    tampering = TamperingResult(confidence=0.0, points=[]) if is_pdf else check_tampering(file_bytes)
     fraud_signals = compute_fraud_signals(parsed.data, tampering)
     logger.info(
         f"[6/6] Done — tampering_confidence={tampering.confidence} "

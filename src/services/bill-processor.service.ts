@@ -14,9 +14,15 @@ export type BillExtractedData = {
     order_date: string | null;          // YYYY-MM-DD
     merchant_name: string | null;
     seller_gstin: string | null;
+    fssai_license: string | null;       // 14-digit FSSAI food business license number
+    fbo_email: string | null;           // platform support email (e.g. support@zeptonow.com)
+    customer_name: string | null;       // "Bill To" name
     total_amount: number | null;
     subtotal: number | null;
     delivery_fee: number | null;
+    handling_fee: number | null;        // handling + late night + surge combined
+    extra_charges: number | null;       // catch-all for unrecognised fee types
+    coupon_code: string | null;         // promo code applied (e.g. "ZEPTOSAVE50")
     discount: number | null;
     taxes: number | null;
     items: BillLineItem[];

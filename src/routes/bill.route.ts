@@ -10,7 +10,6 @@ import { ERRORS } from '../utils/error.ts';
 import {
     acceptBill, processBillInBackground, listBills, getBill, openChest,
 } from '../controller/bill.controller.ts';
-import { callBillProcessor } from '../services/bill-processor.service.ts';
 import { fireAndForget } from '../services/bill-queue.service.ts';
 
 const SCHEMA = {
@@ -24,50 +23,6 @@ const SCHEMA = {
 };
 
 const billRouter = Router();
-
-// ─── POST /api/bills/process ────────────────────────────────────────────────────
-// DEMO MODE: Process bill directly without storing. Returns extracted data + fraud signals.
-// Field name: "file". Returns ProcessSuccessResponse from bill-processor.
-billRouter.post(
-    '/process',
-    (req: Request, res: Response, next: NextFunction) => {
-        billUpload(req, res, (multerErr) => {
-            if (multerErr instanceof multer.MulterError) {
-                return next(
-                    multerErr.code === 'LIMIT_FILE_SIZE'
-                        ? ERRORS.BILL_INVALID_FILE
-                        : ERRORS.INVALID_REQUEST_BODY
-                );
-            }
-            if (multerErr) return next(ERRORS.BILL_INVALID_FILE);
-            next();
-        });
-    },
-    async function (req: Request, res: Response, next: NextFunction) {
-        if (!req.file) return next(ERRORS.BILL_INVALID_FILE);
-
-        try {
-            const { buffer, mimetype, originalname } = req.file;
-            const processorResult = await callBillProcessor(buffer, mimetype, originalname);
-            if (!processorResult.ok) {
-                return next(ERRORS.BILL_PROCESSOR_UNAVAILABLE);
-            }
-
-            const data = processorResult.data;
-            if (data.status === 'failed') {
-                return next({
-                    statusCode: 400,
-                    message: data.message,
-                    code: data.reason,
-                });
-            }
-
-            res.json(successResponse(data, 'Bill processed successfully'));
-        } catch (e: any) {
-            next(ERRORS.BILL_PROCESSOR_UNAVAILABLE);
-        }
-    }
-);
 
 // ─── POST /api/bills/upload ──────────────────────────────────────────────────
 // Accepts multipart/form-data. Field name: "file".

@@ -17,10 +17,16 @@ class ExtractedBillData(BaseModel):
     order_date: Optional[str] = None        # ISO date string YYYY-MM-DD
     merchant_name: Optional[str] = None
     seller_gstin: Optional[str] = None
+    fssai_license: Optional[str] = None   # 14-digit FSSAI license number (food business identifier)
+    fbo_email: Optional[str] = None       # platform support email (e.g. support@zeptonow.com)
+    customer_name: Optional[str] = None   # "Bill To" name — matched against user.name in Node.js
     total_amount: Optional[float] = None
     subtotal: Optional[float] = None
-    delivery_fee: Optional[float] = None
-    discount: Optional[float] = None
+    delivery_fee: Optional[float] = None  # base delivery charge
+    handling_fee: Optional[float] = None  # combined platform charges: handling + late night + surge fee
+    extra_charges: Optional[float] = None # catch-all for any fee type not yet named (rain fee, peak fee, etc.)
+    coupon_code: Optional[str] = None     # coupon/promo code applied (e.g. "ZEPTOSAVE")
+    discount: Optional[float] = None      # total discount: coupon discount + membership discount combined
     taxes: Optional[float] = None
     items: List[BillItem] = []
     currency: str = "INR"
@@ -66,6 +72,6 @@ class ProcessSuccessResponse(BaseModel):
 class ProcessFailResponse(BaseModel):
     status: str = "failed"
     reason: str = Field(
-        description="Machine-readable failure code: quality_low | ocr_failed | parse_failed | invalid_file",
+        description="Machine-readable failure code: quality_low | ocr_failed | parse_failed | invalid_file | not_a_bill",
     )
     message: str = Field(description="Human-readable error message for the client")
