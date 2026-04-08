@@ -11,7 +11,7 @@ import { uploadBillImage } from '../services/gcp-storage.service.ts';
 import { drawReward } from './reward.controller.ts';
 import {
     BillView, BillUploadResponse, ChestOpenResponse,
-    BillStatus, toBillView,
+    BillStatus, ProcessedBillData, toBillView,
 } from '../models/bill.model.ts';
 import { toPlatform } from '../utils/bill.utils.ts';
 import { Paginated } from '../types/pagination.ts';
@@ -22,6 +22,41 @@ const logger = createLogger('@bill.controller');
 const FRAUD_AUTO_APPROVE_MAX  = 49;
 const FRAUD_MANUAL_REVIEW_MAX = 80;
 // score > FRAUD_MANUAL_REVIEW_MAX → auto-reject
+
+async function persistProcessedBill(
+    billId: number,
+    userId: number,
+    data: ProcessedBillData
+): Promise<'saved' | 'duplicate' | 'failed'> {
+    const saveResult = await BillRepository.updateProcessed(billId, data);
+    if (saveResult.isOk()) return 'saved';
+
+    // Repository returns DATABASE_ERROR in catch by guide rules.
+    // On save failure, re-check duplicate signatures to distinguish collision vs infra issue.
+    const phashCheck = await BillRepository.findByPhash(data.phash);
+    if (phashCheck.isOk() && phashCheck.value && phashCheck.value.id !== billId) {
+        await BillRepository.updateStatus(billId, 'rejected', 'Duplicate bill (visual match)');
+        logger.info(`Bill ${billId} rejected during save due to pHash duplicate collision`);
+        return 'duplicate';
+    }
+
+    if (data.order_id && data.platform) {
+        const orderCheck = await BillRepository.findByOrderIdAndPlatform(
+            data.order_id,
+            data.platform,
+            userId
+        );
+        if (orderCheck.isOk() && orderCheck.value && orderCheck.value.id !== billId) {
+            await BillRepository.updateStatus(billId, 'rejected', 'Duplicate order ID');
+            logger.info(`Bill ${billId} rejected during save due to order/platform duplicate collision`);
+            return 'duplicate';
+        }
+    }
+
+    logger.error(`Bill ${billId}: failed to persist processed data`, saveResult.error);
+    await BillRepository.updateStatus(billId, 'failed', 'Internal error: could not save bill result');
+    return 'failed';
+}
 
 // ── Phase 1: Accept upload (fast — returns in ~200ms) ─────────────────────────
 // Validates limits + dedup, creates a queued bill row, returns bill_id immediately.
@@ -57,7 +92,12 @@ export const acceptBill = async (
 
     // 3. Create bill row with status='queued' — background worker fills in the rest
     const queuedBill = await BillRepository.createQueued({ user_id: userId, sha256_hash: sha256Hash });
-    if (queuedBill.isErr()) return err(queuedBill.error);
+    if (queuedBill.isErr()) {
+        // Race-safe duplicate fallback (DB unique collision between pre-check and insert)
+        const raceDup = await BillRepository.findBySha256Hash(sha256Hash);
+        if (raceDup.isOk() && raceDup.value) return err(ERRORS.BILL_DUPLICATE);
+        return err(queuedBill.error);
+    }
 
     return ok({
         bill_id: queuedBill.value.id,
@@ -112,6 +152,16 @@ export async function processBillInBackground(
         return;
     }
 
+    // Integrity gate: FastAPI and Node must agree on exact file hash.
+    const localHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    if (processorData.image_hash !== localHash) {
+        logger.error(
+            `Bill ${billId}: processor hash mismatch (node=${localHash.slice(0, 16)}..., fastapi=${processorData.image_hash.slice(0, 16)}...)`
+        );
+        await BillRepository.updateStatus(billId, 'failed', 'Integrity check failed');
+        return;
+    }
+
     const { extracted_data, phash, fraud_signals } = processorData;
     const fraudScore = fraud_signals.fraud_score;
 
@@ -129,7 +179,12 @@ export async function processBillInBackground(
 
     // pHash near-duplicate check (exclude self — this bill already exists in DB as queued/processing)
     const phashCheck = await BillRepository.findByPhash(phash);
-    if (phashCheck.isOk() && phashCheck.value && phashCheck.value.id !== billId) {
+    if (phashCheck.isErr()) {
+        logger.error(`Bill ${billId}: failed to check pHash duplicate`, phashCheck.error);
+        await BillRepository.updateStatus(billId, 'failed', 'Internal error: duplicate check failed');
+        return;
+    }
+    if (phashCheck.value && phashCheck.value.id !== billId) {
         await BillRepository.updateStatus(billId, 'rejected', 'Duplicate bill (visual match)');
         logger.info(`Bill ${billId} rejected — phash duplicate of bill ${phashCheck.value.id}`);
         return;
@@ -142,7 +197,12 @@ export async function processBillInBackground(
             extracted_data.platform ?? '',
             userId
         );
-        if (crossDup.isOk() && crossDup.value) {
+        if (crossDup.isErr()) {
+            logger.error(`Bill ${billId}: failed to check order duplicate`, crossDup.error);
+            await BillRepository.updateStatus(billId, 'failed', 'Internal error: duplicate check failed');
+            return;
+        }
+        if (crossDup.value) {
             await BillRepository.updateStatus(billId, 'rejected', 'Duplicate order ID');
             logger.info(`Bill ${billId} rejected — order_id duplicate`);
             return;
@@ -159,7 +219,7 @@ export async function processBillInBackground(
 
     // Auto-rejected — fill in metadata, no image stored
     if (billStatus === 'rejected') {
-        await BillRepository.updateProcessed(billId, {
+        const persist = await persistProcessedBill(billId, userId, {
             phash,
             platform,
             order_id:         extracted_data.order_id,
@@ -174,6 +234,7 @@ export async function processBillInBackground(
             reward_amount:    null,
             chest_decoys:     null,
         });
+        if (persist !== 'saved') return;
         logger.info(`Bill ${billId} auto-rejected — fraud score ${fraudScore}`);
         return;
     }
@@ -189,7 +250,7 @@ export async function processBillInBackground(
 
     // Pending (manual review) — save with image, no reward yet
     if (billStatus === 'pending') {
-        await BillRepository.updateProcessed(billId, {
+        const persist = await persistProcessedBill(billId, userId, {
             phash,
             platform,
             order_id:         extracted_data.order_id,
@@ -204,6 +265,7 @@ export async function processBillInBackground(
             reward_amount:    null,
             chest_decoys:     null,
         });
+        if (persist !== 'saved') return;
         logger.info(`Bill ${billId} queued for manual review — fraud score ${fraudScore}`);
         return;
     }
@@ -225,7 +287,7 @@ export async function processBillInBackground(
 
     const draw = drawReward(tiersResult.value, userResult.value.pity_counter, limits.pity_cap);
 
-    await BillRepository.updateProcessed(billId, {
+    const persist = await persistProcessedBill(billId, userId, {
         phash,
         platform,
         order_id:         extracted_data.order_id,
@@ -240,6 +302,7 @@ export async function processBillInBackground(
         reward_amount:    draw.amount,
         chest_decoys:     draw.decoys,
     });
+    if (persist !== 'saved') return;
 
     // Update pity counter (non-fatal — bill + reward are already saved)
     const pityResult = draw.pity_triggered

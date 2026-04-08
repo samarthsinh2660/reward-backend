@@ -11,7 +11,7 @@ from utils.image import compute_sha256, compute_phash, compute_text_phash
 from services.quality import check_quality
 from services.ocr import run_ocr
 from services.parser import parse_bill, parse_bill_pdf
-from services.tampering import check_tampering, TamperingResult
+from services.tampering import check_tampering, check_pdf_tampering
 from services.fraud import compute_fraud_signals
 
 logging.basicConfig(
@@ -145,8 +145,7 @@ async def process_bill(file: UploadFile = File(...)):
 
     # ── 6. Tampering + Fraud ──────────────────────────────────────────────────
     logger.info("[6/6] Running tampering detection and fraud scoring...")
-    # PDFs have no JPEG/EXIF structure — skip tampering check (PIL cannot open PDFs)
-    tampering = TamperingResult(confidence=0.0, points=[]) if is_pdf else check_tampering(file_bytes)
+    tampering = check_pdf_tampering(file_bytes) if is_pdf else check_tampering(file_bytes)
     fraud_signals = compute_fraud_signals(parsed.data, tampering)
     logger.info(
         f"[6/6] Done — tampering_confidence={tampering.confidence} "

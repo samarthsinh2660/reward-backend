@@ -16,11 +16,13 @@ const fileFilter = (
     cb: multer.FileFilterCallback
 ) => {
     const mime = file.mimetype.toLowerCase();
-    // Accept images, PDF, and octet-stream (Android sometimes sends this for PDFs)
-    const isValid =
-        mime.startsWith('image/') ||
-        mime === 'application/pdf' ||
-        mime === 'application/octet-stream';
+    const fileName = file.originalname.toLowerCase();
+
+    // Accept only explicit image/PDF MIME types. For Android octet-stream,
+    // require a .pdf extension to avoid accepting arbitrary binary uploads.
+    const isKnownMime = (ALLOWED_MIME_TYPES as readonly string[]).includes(mime);
+    const isAndroidPdfFallback = mime === 'application/octet-stream' && fileName.endsWith('.pdf');
+    const isValid = isKnownMime || isAndroidPdfFallback;
 
     if (isValid) {
         cb(null, true);

@@ -335,6 +335,7 @@ class BillRepositoryImpl implements IBillRepository {
             return err(ERRORS.DATABASE_ERROR);
         }
     }
+
 }
 
 export const BillRepository = new BillRepositoryImpl();

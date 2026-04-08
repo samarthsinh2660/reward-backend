@@ -2,6 +2,7 @@ import io
 import logging
 import struct
 from PIL import Image, ExifTags
+import pypdf
 
 from config import TAMPERING_CONFIDENCE_THRESHOLD  # noqa: F401 — re-exported for fraud.py
 
@@ -64,6 +65,60 @@ def check_tampering(file_bytes: bytes) -> TamperingResult:
 
     result = TamperingResult(confidence=round(min(score, 1.0), 3), points=reasons)
     logger.info(f"Tampering result: confidence={result.confidence} reasons={reasons}")
+    return result
+
+
+def check_pdf_tampering(file_bytes: bytes) -> TamperingResult:
+    """
+    Lightweight PDF tampering heuristics using metadata and object structure.
+    Returns a confidence score (0.0 = clean, 1.0 = likely tampered).
+    """
+    reasons: list[str] = []
+    score = 0.0
+
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+
+        if reader.is_encrypted:
+            score += 0.15
+            reasons.append("pdf_encrypted")
+
+        metadata = reader.metadata or {}
+        producer = str(metadata.get("/Producer", "")).lower()
+        creator = str(metadata.get("/Creator", "")).lower()
+        suspicious_tools = (
+            "photoshop", "gimp", "illustrator", "canva",
+            "acrobat", "pdf editor", "smallpdf", "ilovepdf",
+        )
+        if any(tool in producer for tool in suspicious_tools) or any(tool in creator for tool in suspicious_tools):
+            score += 0.25
+            reasons.append("pdf_edited_by_known_tool")
+
+        modified_date = str(metadata.get("/ModDate", ""))
+        created_date = str(metadata.get("/CreationDate", ""))
+        if modified_date and created_date and modified_date != created_date:
+            score += 0.15
+            reasons.append("pdf_modified_after_creation")
+
+        root = reader.trailer.get("/Root")
+        if root and "/Names" in root:
+            names = root.get("/Names")
+            if names and "/EmbeddedFiles" in names:
+                score += 0.20
+                reasons.append("pdf_contains_embedded_files")
+
+        # Invoice PDFs should never need JavaScript actions.
+        if root and ("/OpenAction" in root or "/AA" in root):
+            score += 0.30
+            reasons.append("pdf_contains_script_or_auto_action")
+
+    except Exception as e:
+        logger.warning(f"PDF tampering check error ({type(e).__name__}): {e}")
+        score += 0.10
+        reasons.append("pdf_inspection_failed")
+
+    result = TamperingResult(confidence=round(min(score, 1.0), 3), points=reasons)
+    logger.info(f"PDF tampering result: confidence={result.confidence} reasons={reasons}")
     return result
 
 

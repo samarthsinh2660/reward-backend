@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS bills (
   chest_opened     BOOLEAN NOT NULL DEFAULT FALSE,
   created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id)
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  UNIQUE KEY uniq_bill_sha256 (sha256_hash),
+  UNIQUE KEY uniq_bill_phash (phash),
+  UNIQUE KEY uniq_bill_order (order_id, platform)
 )
 `;
 
