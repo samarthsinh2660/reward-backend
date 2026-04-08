@@ -1,7 +1,7 @@
 import { jest, describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
 import mysql from 'mysql2/promise';
 import { GenericContainer } from 'testcontainers';
-import { USER_TABLE, CREATE_USER_TABLE_QUERY } from '../models/user.model.ts';
+import { USER_TABLE } from '../models/user.model.ts';
 import { ERRORS } from '../utils/error.ts';
 
 jest.setTimeout(180000); // containers need time to start
@@ -11,9 +11,6 @@ jest.setTimeout(180000); // containers need time to start
 let container: any;
 let testPool: any;
 
-// Stable proxy object — methods delegate to testPool at call time.
-// This works in ESM because the proxy reference is stable; testPool is
-// resolved when the method is actually invoked (after beforeAll sets it up).
 const dbProxy = {
     query:         (...args: any[]) => testPool.query(...args),
     getConnection: ()               => testPool.getConnection(),
@@ -32,19 +29,38 @@ async function query(sql: string, params: unknown[] = []) {
     conn.release();
 }
 
+const CREATE_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS users (
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  name            VARCHAR(150),
+  email           VARCHAR(255) NOT NULL UNIQUE,
+  phone           VARCHAR(20) UNIQUE,
+  gender          ENUM('male', 'female', 'other'),
+  role            ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+  password_hash   VARCHAR(255),
+  upi_id          VARCHAR(255),
+  wallet_balance  DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  is_onboarded    BOOLEAN NOT NULL DEFAULT FALSE,
+  is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+  pity_counter    INT NOT NULL DEFAULT 0,
+  referral_code   VARCHAR(20) UNIQUE,
+  referred_by     VARCHAR(20),
+  coin_balance    INT NOT NULL DEFAULT 0,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+)`;
+
 async function resetTable() {
     await query(`DELETE FROM ${USER_TABLE}`);
     await query(`ALTER TABLE ${USER_TABLE} AUTO_INCREMENT = 1`);
-    // Seed 3 users: 1 regular, 1 onboarded with referral, 1 admin
+    // Seed 3 users: 1 regular onboarded, 1 not onboarded, 1 admin
     await query(`
-        INSERT INTO users (id, name, email, phone, role, is_onboarded, is_active, referral_code, coin_balance) VALUES
-        (1, 'Alice',  'alice@test.com', '911111111111', 'user',  1, 1, 'ALICE1', 0),
-        (2, 'Bob',    'bob@test.com',   '912222222222', 'user',  0, 1, NULL,     0),
-        (3, 'Admin',  'admin@test.com', '919999999999', 'admin', 1, 1, 'ADMIN3', 0)
+        INSERT INTO users (id, name, email, role, is_onboarded, is_active, referral_code, coin_balance) VALUES
+        (1, 'Alice', 'alice@test.com', 'user',  1, 1, 'ALICE1', 0),
+        (2, 'Bob',   'bob@test.com',   'user',  0, 1, NULL,     0),
+        (3, 'Admin', 'admin@test.com', 'admin', 1, 1, 'ADMIN3', 0)
     `);
-    await query(`
-        UPDATE users SET password_hash = '$2b$12$testhash' WHERE role = 'admin'
-    `);
+    await query(`UPDATE users SET password_hash = '$2b$12$testhash' WHERE role = 'admin'`);
 }
 
 // ─── LIFECYCLE ───────────────────────────────────────────────────────────────
@@ -72,9 +88,8 @@ beforeAll(async () => {
         waitForConnections: true,
     });
 
-    // Create table using the same query as the model (matches 01-tables.sql)
     const conn = await testPool.getConnection();
-    await conn.query(CREATE_USER_TABLE_QUERY);
+    await conn.query(CREATE_TABLE_SQL);
     conn.release();
 });
 
@@ -86,29 +101,29 @@ afterAll(async () => {
 
 beforeEach(resetTable);
 
-// ─── findByPhone ──────────────────────────────────────────────────────────────
+// ─── findByEmail ──────────────────────────────────────────────────────────────
 
-describe('UserRepository.findByPhone', () => {
-    it('returns user for existing phone', async () => {
-        const result = await UserRepository.findByPhone('911111111111');
+describe('UserRepository.findByEmail', () => {
+    it('returns user for existing email', async () => {
+        const result = await UserRepository.findByEmail('alice@test.com');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) {
             expect(result.value).not.toBeNull();
-            expect(result.value!.phone).toBe('911111111111');
+            expect(result.value!.email).toBe('alice@test.com');
             expect(result.value!.name).toBe('Alice');
         }
     });
 
-    it('returns null for unknown phone', async () => {
-        const result = await UserRepository.findByPhone('910000000000');
+    it('returns null for unknown email', async () => {
+        const result = await UserRepository.findByEmail('nobody@test.com');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) expect(result.value).toBeNull();
     });
 
     it('does not return password_hash', async () => {
-        const result = await UserRepository.findByPhone('919999999999');
+        const result = await UserRepository.findByEmail('admin@test.com');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) {
@@ -118,11 +133,11 @@ describe('UserRepository.findByPhone', () => {
     });
 });
 
-// ─── findByPhoneWithPassword ──────────────────────────────────────────────────
+// ─── findByEmailWithPassword ──────────────────────────────────────────────────
 
-describe('UserRepository.findByPhoneWithPassword', () => {
+describe('UserRepository.findByEmailWithPassword', () => {
     it('returns user including password_hash', async () => {
-        const result = await UserRepository.findByPhoneWithPassword('919999999999');
+        const result = await UserRepository.findByEmailWithPassword('admin@test.com');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) {
@@ -132,8 +147,8 @@ describe('UserRepository.findByPhoneWithPassword', () => {
         }
     });
 
-    it('returns null for unknown phone', async () => {
-        const result = await UserRepository.findByPhoneWithPassword('910000000000');
+    it('returns null for unknown email', async () => {
+        const result = await UserRepository.findByEmailWithPassword('nobody@test.com');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) expect(result.value).toBeNull();
@@ -186,20 +201,20 @@ describe('UserRepository.findByReferralCode', () => {
 
 describe('UserRepository.create', () => {
     it('inserts new user and returns them', async () => {
-        const result = await UserRepository.create('913333333333');
+        const result = await UserRepository.create('newuser@test.com');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) {
-            expect(result.value.phone).toBe('913333333333');
+            expect(result.value.email).toBe('newuser@test.com');
             expect(result.value.role).toBe('user');
             expect(result.value.is_onboarded).toBe(0);
             expect(result.value.wallet_balance).toBe('0.00');
         }
     });
 
-    it('created user can be found by phone', async () => {
-        await UserRepository.create('913333333333');
-        const found = await UserRepository.findByPhone('913333333333');
+    it('created user can be found by email', async () => {
+        await UserRepository.create('newuser@test.com');
+        const found = await UserRepository.findByEmail('newuser@test.com');
 
         expect(found.isOk()).toBe(true);
         if (found.isOk()) expect(found.value).not.toBeNull();
@@ -246,21 +261,6 @@ describe('UserRepository.onboard', () => {
             expect(found.value.is_onboarded).toBe(1);
         }
     });
-});
-
-// ─── onboard (email + gender) ─────────────────────────────────────────────────
-
-describe('UserRepository.onboard (email + gender)', () => {
-    it('stores email when provided', async () => {
-        const result = await UserRepository.onboard(
-            2,
-            { name: 'Bob', email: 'bob@example.com' },
-            'NEWBOB2'
-        );
-
-        expect(result.isOk()).toBe(true);
-        if (result.isOk()) expect(result.value.email).toBe('bob@example.com');
-    });
 
     it('stores gender when provided', async () => {
         const result = await UserRepository.onboard(
@@ -271,17 +271,6 @@ describe('UserRepository.onboard (email + gender)', () => {
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) expect(result.value.gender).toBe('male');
-    });
-
-    it('leaves email null when not provided', async () => {
-        const result = await UserRepository.onboard(
-            2,
-            { name: 'Bob' },
-            'NEWBOB2'
-        );
-
-        expect(result.isOk()).toBe(true);
-        if (result.isOk()) expect(result.value.email).toBeNull();
     });
 
     it('leaves gender null when not provided', async () => {
@@ -348,11 +337,9 @@ describe('UserRepository.incrementPityCounter', () => {
 
 describe('UserRepository.resetPityCounter', () => {
     it('sets pity_counter to 0', async () => {
-        // First increment a few times
         await UserRepository.incrementPityCounter(1);
         await UserRepository.incrementPityCounter(1);
 
-        // Then reset
         await UserRepository.resetPityCounter(1);
         const result = await UserRepository.findById(1);
 

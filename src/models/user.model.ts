@@ -2,29 +2,6 @@ import { RowDataPacket } from 'mysql2';
 
 export const USER_TABLE = 'users';
 
-// Copied from src/database/01-tables.sql — do not edit here, update the SQL first
-export const CREATE_USER_TABLE_QUERY = `
-CREATE TABLE IF NOT EXISTS users (
-  id              INT AUTO_INCREMENT PRIMARY KEY,
-  name            VARCHAR(150),
-  email           VARCHAR(255),
-  phone           VARCHAR(20) NOT NULL UNIQUE,
-  gender          ENUM('male', 'female', 'other'),
-  role            ENUM('user', 'admin') NOT NULL DEFAULT 'user',
-  password_hash   VARCHAR(255),
-  upi_id          VARCHAR(255),
-  wallet_balance  DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
-  is_onboarded    BOOLEAN NOT NULL DEFAULT FALSE,
-  is_active       BOOLEAN NOT NULL DEFAULT TRUE,
-  pity_counter    INT NOT NULL DEFAULT 0,
-  referral_code   VARCHAR(20) UNIQUE,
-  referred_by     VARCHAR(20),
-  coin_balance    INT NOT NULL DEFAULT 0,
-  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-)
-`;
-
 // ── Enum constants — import in routes/queries, never hardcode the strings ────
 
 export const USER_ROLES = ['user', 'admin'] as const;
@@ -38,15 +15,15 @@ export type UserGender = typeof USER_GENDERS[number];
 export interface User extends RowDataPacket {
     id: number;
     name: string | null;
-    email: string | null;
-    phone: string;
+    email: string;                    // primary login identifier (NOT NULL in DB)
+    phone: string | null;             // optional — collected at withdrawal
     gender: UserGender | null;
     role: UserRole;
-    password_hash: string | null;   // only set for admin accounts
+    password_hash: string | null;     // only set for admin accounts
     upi_id: string | null;
     wallet_balance: number;
-    is_onboarded: number;           // TINYINT — 0 | 1
-    is_active: number;              // TINYINT — 0 | 1
+    is_onboarded: number;             // TINYINT — 0 | 1
+    is_active: number;                // TINYINT — 0 | 1
     pity_counter: number;
     referral_code: string | null;
     referred_by: string | null;
@@ -60,8 +37,8 @@ export interface User extends RowDataPacket {
 export type UserView = {
     id: number;
     name: string | null;
-    email: string | null;
-    phone: string;
+    email: string;
+    phone: string | null;
     gender: UserGender | null;
     role: UserRole;
     wallet_balance: number;
@@ -75,18 +52,17 @@ export type UserView = {
 // ── Input types ───────────────────────────────────────────────────────────────
 
 export type CreateUserData = {
-    phone: string;
+    email: string;
 };
 
 export type OnboardUserData = {
     name: string;
-    email?: string;
     gender?: UserGender;
     referral_code_used?: string;    // the referrer's code, entered during onboarding
 };
 
 export type AdminLoginData = {
-    phone: string;
+    email: string;
     password: string;
 };
 

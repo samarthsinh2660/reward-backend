@@ -33,15 +33,15 @@ const mockCashbackTransactionRepository = {
 };
 
 const mockUserRepository = {
-    findById:              jest.fn<any>(),
-    findByPhone:           jest.fn<any>(),
-    findByPhoneWithPassword: jest.fn<any>(),
-    findByReferralCode:    jest.fn<any>(),
-    create:                jest.fn<any>(),
-    onboard:               jest.fn<any>(),
-    addCoins:              jest.fn<any>(),
-    incrementPityCounter:  jest.fn<any>(),
-    resetPityCounter:      jest.fn<any>(),
+    findById:                jest.fn<any>(),
+    findByEmail:             jest.fn<any>(),
+    findByEmailWithPassword: jest.fn<any>(),
+    findByReferralCode:      jest.fn<any>(),
+    create:                  jest.fn<any>(),
+    onboard:                 jest.fn<any>(),
+    addCoins:                jest.fn<any>(),
+    incrementPityCounter:    jest.fn<any>(),
+    resetPityCounter:        jest.fn<any>(),
 };
 
 const mockCallBillProcessor = jest.fn<any>();
@@ -148,7 +148,7 @@ function makeUploadCounts(overrides: Record<string, unknown> = {}) {
 
 function makeUser(overrides: Record<string, unknown> = {}) {
     return {
-        id: 10, name: 'Test User', phone: '919876543210', email: null, gender: null,
+        id: 10, name: 'Test User', email: 'user@test.com', phone: null, gender: null,
         role: 'user', password_hash: null, upi_id: null, wallet_balance: 100,
         is_onboarded: 1, is_active: 1, pity_counter: 5,
         referral_code: 'USER0001', referred_by: null, coin_balance: 0,
@@ -167,11 +167,15 @@ function makeActiveTiers() {
     ];
 }
 
+// SHA256 of Buffer.from('fake-image-data') — must match FILE constant below
+const FAKE_IMAGE_HASH = '28d81db19370f98fdc1d3e43fb1ef83a7cee62f3be86fed923d5f734da41319c';
+
 function makeProcessorSuccess(overrides: Record<string, unknown> = {}) {
     return {
         ok: true,
         data: {
             status: 'success',
+            image_hash: FAKE_IMAGE_HASH,
             phash: 'abcdef123456',
             extracted_data: {
                 platform: 'zepto',

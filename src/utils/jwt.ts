@@ -5,7 +5,7 @@ import { ERRORS } from './error.ts';
 export interface TokenData {
     id: number;
     is_admin: boolean;
-    phone: string;
+    email: string;
 }
 
 export function createAuthToken(data: TokenData): string {

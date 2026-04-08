@@ -6,14 +6,24 @@ import { UserView, OnboardUserData, toUserView } from '../models/user.model.ts';
 import { createAuthToken, createRefreshToken, decodeRefreshToken, TokenData } from '../utils/jwt.ts';
 import { LoginResponse } from '../types/login.ts';
 import { createLogger } from '../utils/logger.ts';
-import { verifyMsg91Token, sendOtpViaMSG91, verifyOtpViaMSG91 } from '../services/msg91.service.ts';
+import { sendOtpEmail } from '../services/email.service.ts';
+import { OTP_EXPIRY_SECONDS, OTP_MAX_ATTEMPTS, NODE_ENV } from '../config/env.ts';
 
 const logger = createLogger('@auth.controller');
 
-const REFERRAL_COINS = 50; // coins awarded to referrer when their referral completes onboarding
+const REFERRAL_COINS = 50;
+
+// ─── In-memory OTP store ──────────────────────────────────────────────────────
+
+type OtpEntry = { code: string; expiresAt: number; attempts: number };
+const otpStore = new Map<string, OtpEntry>();
+
+function generateOtp(): string {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+}
 
 function generateReferralCode(userId: number): string {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous chars (0,O,1,I)
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = '';
     for (let i = 0; i < 6; i++) {
         code += chars[Math.floor(Math.random() * chars.length)];
@@ -21,110 +31,84 @@ function generateReferralCode(userId: number): string {
     return `${code}${userId}`;
 }
 
-// ─── REST OTP flow (no native SDK) ───────────────────────────────────────────
+// ─── POST /api/auth/send-otp ──────────────────────────────────────────────────
 
-// POST /auth/send-otp — triggers MSG91 to send SMS OTP
 export const sendOtp = async (
-    phone: string
+    email: string
 ): Promise<Result<{ message: string }, RequestError>> => {
     try {
-        await sendOtpViaMSG91(phone);
-        return ok({ message: 'OTP sent' });
-    } catch (e: any) {
+        const code = generateOtp();
+        const expiresAt = Date.now() + OTP_EXPIRY_SECONDS * 1000;
+
+        otpStore.set(email.toLowerCase(), { code, expiresAt, attempts: 0 });
+
+        if (NODE_ENV !== 'production') {
+            logger.info(`[DEV] OTP for ${email}: ${code}`);
+        }
+
+        try {
+            await sendOtpEmail(email, code);
+        } catch (emailErr) {
+            logger.error('Failed to send OTP email', emailErr as Error);
+            // In dev mode, OTP is logged — don't fail the request
+            if (NODE_ENV === 'production') return err(ERRORS.OTP_SEND_FAILED);
+        }
+
+        return ok({ message: 'OTP sent to your email' });
+    } catch (e) {
+        logger.error('sendOtp error', e as Error);
         return err(ERRORS.OTP_SEND_FAILED);
     }
 };
 
-// POST /auth/verify-otp — verifies OTP entered by user, then finds/creates user
+// ─── POST /api/auth/verify-otp ────────────────────────────────────────────────
+
 export const verifyOtpDirect = async (
-    phone: string,
+    email: string,
     otp: string
 ): Promise<Result<LoginResponse<UserView>, RequestError>> => {
-    const valid = await verifyOtpViaMSG91(phone, otp);
-    if (!valid) return err(ERRORS.INVALID_OTP);
+    const key = email.toLowerCase();
+    const entry = otpStore.get(key);
 
-    const normalizedPhone = phone.startsWith('+') ? phone.slice(1) : phone;
+    if (!entry) return err(ERRORS.INVALID_OTP);
+    if (Date.now() > entry.expiresAt) {
+        otpStore.delete(key);
+        return err(ERRORS.INVALID_OTP);
+    }
+    if (entry.attempts + 1 > OTP_MAX_ATTEMPTS) {
+        otpStore.delete(key);
+        return err(ERRORS.INVALID_OTP);
+    }
+    if (entry.code !== otp) {
+        otpStore.set(key, { ...entry, attempts: entry.attempts + 1 });
+        return err(ERRORS.INVALID_OTP);
+    }
 
-    let userResult = await UserRepository.findByPhone(normalizedPhone);
+    otpStore.delete(key);
+
+    let userResult = await UserRepository.findByEmail(key);
     if (userResult.isErr()) return err(userResult.error);
 
     let user = userResult.value;
     if (user && user.is_active === 0) return err(ERRORS.USER_BANNED);
 
     if (!user) {
-        const created = await UserRepository.create(normalizedPhone);
+        const created = await UserRepository.create(key);
         if (created.isErr()) return err(created.error);
         user = created.value;
     }
 
-    const tokenData: TokenData = { id: user.id, is_admin: user.role === 'admin', phone: user.phone };
+    const tokenData: TokenData = { id: user.id, is_admin: user.role === 'admin', email: user.email };
     const token         = createAuthToken(tokenData);
     const refresh_token = createRefreshToken(tokenData);
 
-    logger.info(`User ${user.id} authenticated via REST OTP (phone: ${normalizedPhone})`);
+    logger.info(`User ${user.id} authenticated via email OTP (${key})`);
     const userView = toUserView(user);
-    return ok({
-        token,
-        refresh_token,
-        phone: userView.phone,
-        is_onboarded: userView.is_onboarded,
-        user: userView,
-    });
+    return ok({ token, refresh_token, email: userView.email, is_onboarded: userView.is_onboarded, user: userView });
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── POST /api/auth/onboard ───────────────────────────────────────────────────
 
-// Called after MSG91 OTP is verified client-side.
-// Validates the MSG91 access token server-side, then finds or creates the user.
-export const verifyOtp = async (
-    phone: string,
-    msg91AccessToken: string
-): Promise<Result<LoginResponse<UserView>, RequestError>> => {
-    // Verify with MSG91 API — rejects if token is forged or already used
-    const tokenValid = await verifyMsg91Token(msg91AccessToken);
-    if (!tokenValid) return err(ERRORS.INVALID_OTP);
-
-    // Normalize phone: ensure it has country code prefix stored consistently
-    const normalizedPhone = phone.startsWith('+') ? phone.slice(1) : phone;
-
-    let userResult = await UserRepository.findByPhone(normalizedPhone);
-    if (userResult.isErr()) return err(userResult.error);
-
-    let user = userResult.value;
-
-    if (user && user.is_active === 0) {
-        return err(ERRORS.USER_BANNED);
-    }
-
-    // New user — create record
-    if (!user) {
-        const created = await UserRepository.create(normalizedPhone);
-        if (created.isErr()) return err(created.error);
-        user = created.value;
-    }
-
-    const tokenData: TokenData = {
-        id: user.id,
-        is_admin: user.role === 'admin',
-        phone: user.phone,
-    };
-
-    const token = createAuthToken(tokenData);
-    const refresh_token = createRefreshToken(tokenData);
-
-    logger.info(`User ${user.id} authenticated (phone: ${normalizedPhone})`);
-
-    const userView = toUserView(user);
-    return ok({
-        token,
-        refresh_token,
-        phone: userView.phone,
-        is_onboarded: userView.is_onboarded,
-        user: userView,
-    });
-};
-
-// Called once after OTP verify when is_onboarded is false.
 export const onboardUser = async (
     userId: number,
     data: OnboardUserData
@@ -136,31 +120,22 @@ export const onboardUser = async (
         return err(ERRORS.ALREADY_ONBOARDED);
     }
 
-    // Validate referral code if provided
     let referrerId: number | null = null;
     if (data.referral_code_used) {
         const referrer = await UserRepository.findByReferralCode(data.referral_code_used);
         if (referrer.isErr()) return err(referrer.error);
-
-        if (!referrer.value) {
-            return err(ERRORS.INVALID_REFERRAL_CODE);
-        }
-        if (referrer.value.id === userId) {
-            return err(ERRORS.SELF_REFERRAL);
-        }
+        if (!referrer.value) return err(ERRORS.INVALID_REFERRAL_CODE);
+        if (referrer.value.id === userId) return err(ERRORS.SELF_REFERRAL);
         referrerId = referrer.value.id;
     }
 
     const referralCode = generateReferralCode(userId);
-
     const updated = await UserRepository.onboard(userId, data, referralCode);
     if (updated.isErr()) return err(updated.error);
 
-    // Award coins to referrer after successful onboard
     if (referrerId) {
         const coinResult = await UserRepository.addCoins(referrerId, REFERRAL_COINS);
         if (coinResult.isErr()) {
-            // Non-fatal — log and continue. User is already onboarded.
             logger.error(`Failed to award referral coins to user ${referrerId}`);
         }
     }
@@ -169,7 +144,8 @@ export const onboardUser = async (
     return ok(toUserView(updated.value));
 };
 
-// GET /me — returns the authenticated user's profile
+// ─── GET /api/auth/me ─────────────────────────────────────────────────────────
+
 export const getMe = async (
     userId: number
 ): Promise<Result<UserView, RequestError>> => {
@@ -178,12 +154,13 @@ export const getMe = async (
     return ok(toUserView(user.value));
 };
 
-// POST /admin/login — admin login with phone + password (web panel, no OTP SDK)
+// ─── POST /api/admin/auth/login ───────────────────────────────────────────────
+
 export const loginAdmin = async (
-    phone: string,
+    email: string,
     password: string
 ): Promise<Result<LoginResponse<UserView>, RequestError>> => {
-    const userResult = await UserRepository.findByPhoneWithPassword(phone);
+    const userResult = await UserRepository.findByEmailWithPassword(email);
     if (userResult.isErr()) return err(userResult.error);
 
     const user = userResult.value;
@@ -195,30 +172,23 @@ export const loginAdmin = async (
     const isValid = await bcrypt.compare(password, user.password_hash);
     if (!isValid) return err(ERRORS.INVALID_CREDENTIALS);
 
-    const tokenData: TokenData = {
-        id: user.id,
-        is_admin: true,
-        phone: user.phone,
-    };
-
-    const token = createAuthToken(tokenData);
+    const tokenData: TokenData = { id: user.id, is_admin: true, email: user.email };
+    const token         = createAuthToken(tokenData);
     const refresh_token = createRefreshToken(tokenData);
 
     logger.info(`Admin ${user.id} logged in`);
-    return ok({ ...toUserView(user), token, refresh_token });
+    const userView = toUserView(user);
+    return ok({ token, refresh_token, email: userView.email, is_onboarded: userView.is_onboarded, user: userView });
 };
 
-// POST /refresh — issues a new access token from a valid refresh token
+// ─── POST /api/auth/refresh ───────────────────────────────────────────────────
+
 export const refreshAccessToken = async (
     refreshToken: string
 ): Promise<Result<{ token: string }, RequestError>> => {
     try {
         const decoded = decodeRefreshToken(refreshToken);
-        const newToken = createAuthToken({
-            id: decoded.id,
-            is_admin: decoded.is_admin,
-            phone: decoded.phone,
-        });
+        const newToken = createAuthToken({ id: decoded.id, is_admin: decoded.is_admin, email: decoded.email });
         return ok({ token: newToken });
     } catch {
         return err(ERRORS.INVALID_REFRESH_TOKEN);

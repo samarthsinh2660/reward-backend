@@ -7,12 +7,18 @@ import { User, OnboardUserData, USER_TABLE } from '../models/user.model.ts';
 
 const logger = createLogger('@user.repository');
 
+const SELECT_SAFE = `
+    SELECT id, name, email, phone, gender, role, upi_id, wallet_balance,
+           is_onboarded, is_active, pity_counter, referral_code, referred_by,
+           coin_balance, created_at, updated_at
+    FROM ${USER_TABLE}`;
+
 export interface IUserRepository {
-    findByPhone(phone: string): Promise<Result<User | null, RequestError>>;
-    findByPhoneWithPassword(phone: string): Promise<Result<User | null, RequestError>>;
+    findByEmail(email: string): Promise<Result<User | null, RequestError>>;
+    findByEmailWithPassword(email: string): Promise<Result<User | null, RequestError>>;
     findById(id: number): Promise<Result<User, RequestError>>;
     findByReferralCode(code: string): Promise<Result<User | null, RequestError>>;
-    create(phone: string): Promise<Result<User, RequestError>>;
+    create(email: string): Promise<Result<User, RequestError>>;
     onboard(id: number, data: OnboardUserData, generatedReferralCode: string): Promise<Result<User, RequestError>>;
     addCoins(id: number, coins: number): Promise<Result<void, RequestError>>;
     incrementPityCounter(id: number): Promise<Result<void, RequestError>>;
@@ -21,35 +27,31 @@ export interface IUserRepository {
 
 class UserRepositoryImpl implements IUserRepository {
 
-    // Used for OTP login — no password_hash returned
-    async findByPhone(phone: string): Promise<Result<User | null, RequestError>> {
+    async findByEmail(email: string): Promise<Result<User | null, RequestError>> {
         try {
             const [rows] = await db.query<User[]>(
-                `SELECT id, name, email, phone, gender, role, upi_id, wallet_balance, is_onboarded, is_active,
-                        pity_counter, referral_code, referred_by, coin_balance, created_at, updated_at
-                 FROM ${USER_TABLE} WHERE phone = ?`,
-                [phone]
+                `${SELECT_SAFE} WHERE email = ?`,
+                [email]
             );
             return ok(rows.length > 0 ? rows[0] : null);
         } catch (error) {
-            logger.error('Error finding user by phone', error);
+            logger.error('Error finding user by email', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }
 
-    // Used for admin password login — includes password_hash
-    async findByPhoneWithPassword(phone: string): Promise<Result<User | null, RequestError>> {
+    async findByEmailWithPassword(email: string): Promise<Result<User | null, RequestError>> {
         try {
             const [rows] = await db.query<User[]>(
                 `SELECT id, name, email, phone, gender, role, password_hash, upi_id, wallet_balance,
                         is_onboarded, is_active, pity_counter, referral_code, referred_by,
                         coin_balance, created_at, updated_at
-                 FROM ${USER_TABLE} WHERE phone = ?`,
-                [phone]
+                 FROM ${USER_TABLE} WHERE email = ?`,
+                [email]
             );
             return ok(rows.length > 0 ? rows[0] : null);
         } catch (error) {
-            logger.error('Error finding user by phone (with password)', error);
+            logger.error('Error finding user by email (with password)', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }
@@ -57,9 +59,7 @@ class UserRepositoryImpl implements IUserRepository {
     async findById(id: number): Promise<Result<User, RequestError>> {
         try {
             const [rows] = await db.query<User[]>(
-                `SELECT id, name, email, phone, gender, role, upi_id, wallet_balance, is_onboarded, is_active,
-                        pity_counter, referral_code, referred_by, coin_balance, created_at, updated_at
-                 FROM ${USER_TABLE} WHERE id = ?`,
+                `${SELECT_SAFE} WHERE id = ?`,
                 [id]
             );
             if (rows.length === 0) return err(ERRORS.USER_NOT_FOUND);
@@ -73,7 +73,7 @@ class UserRepositoryImpl implements IUserRepository {
     async findByReferralCode(code: string): Promise<Result<User | null, RequestError>> {
         try {
             const [rows] = await db.query<User[]>(
-                `SELECT id, name, phone, role, referral_code, coin_balance FROM ${USER_TABLE} WHERE referral_code = ?`,
+                `SELECT id, name, email, role, referral_code, coin_balance FROM ${USER_TABLE} WHERE referral_code = ?`,
                 [code]
             );
             return ok(rows.length > 0 ? rows[0] : null);
@@ -83,11 +83,11 @@ class UserRepositoryImpl implements IUserRepository {
         }
     }
 
-    async create(phone: string): Promise<Result<User, RequestError>> {
+    async create(email: string): Promise<Result<User, RequestError>> {
         try {
             const [result] = await db.query<ResultSetHeader>(
-                `INSERT INTO ${USER_TABLE} (phone) VALUES (?)`,
-                [phone]
+                `INSERT INTO ${USER_TABLE} (email) VALUES (?)`,
+                [email]
             );
             return await this.findById(result.insertId);
         } catch (error) {
@@ -104,12 +104,11 @@ class UserRepositoryImpl implements IUserRepository {
         try {
             await db.query(
                 `UPDATE ${USER_TABLE}
-                 SET name = ?, email = ?, gender = ?, is_onboarded = TRUE,
+                 SET name = ?, gender = ?, is_onboarded = TRUE,
                      referral_code = ?, referred_by = ?
                  WHERE id = ?`,
                 [
                     data.name,
-                    data.email ?? null,
                     data.gender ?? null,
                     generatedReferralCode,
                     data.referral_code_used ?? null,

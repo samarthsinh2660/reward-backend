@@ -40,7 +40,11 @@ export const BILL_PROCESSOR_URL = process.env.BILL_PROCESSOR_URL!;
 export const GCP_STORAGE_BUCKET   = process.env.GCP_STORAGE_BUCKET!;
 export const GCP_STORAGE_KEY_FILE = process.env.GCP_STORAGE_KEY_FILE!;
 
-// MSG91 — widget credentials (no template_id needed)
-export const MSG91_AUTHKEY    = process.env.MSG91_AUTHKEY!;
-export const MSG91_WIDGET_ID  = process.env.MSG91_WIDGET_ID!;
-export const MSG91_TOKEN_AUTH = process.env.MSG91_TOKEN_AUTH!;
+// Email OTP — Mailjet (same config as Enterprise-chat-system-backend)
+export const MJ_APIKEY_PUBLIC  = process.env.MJ_APIKEY_PUBLIC;
+export const MJ_APIKEY_PRIVATE = process.env.MJ_APIKEY_PRIVATE;
+export const EMAIL_FROM        = process.env.EMAIL_FROM;
+
+// OTP settings
+export const OTP_EXPIRY_SECONDS = parseInt(process.env.OTP_EXPIRY_SECONDS || '300', 10);
+export const OTP_MAX_ATTEMPTS   = parseInt(process.env.OTP_MAX_ATTEMPTS   || '5',   10);

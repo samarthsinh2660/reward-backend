@@ -4,8 +4,8 @@
 CREATE TABLE IF NOT EXISTS users (
   id              INT AUTO_INCREMENT PRIMARY KEY,
   name            VARCHAR(150),
-  email           VARCHAR(255),
-  phone           VARCHAR(20) NOT NULL UNIQUE,
+  email           VARCHAR(255) NOT NULL UNIQUE,         -- primary login identifier (email OTP)
+  phone           VARCHAR(20) UNIQUE,                   -- optional, collected at withdrawal
   gender          ENUM('male', 'female', 'other'),
   role            ENUM('user', 'admin') NOT NULL DEFAULT 'user',
   password_hash   VARCHAR(255),                         -- only set for admin accounts

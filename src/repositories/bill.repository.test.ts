@@ -1,7 +1,28 @@
 import { jest, describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
 import mysql from 'mysql2/promise';
 import { GenericContainer } from 'testcontainers';
-import { USER_TABLE, CREATE_USER_TABLE_QUERY } from '../models/user.model.ts';
+import { USER_TABLE } from '../models/user.model.ts';
+
+const CREATE_USER_TABLE_QUERY = `
+CREATE TABLE IF NOT EXISTS users (
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  name            VARCHAR(150),
+  email           VARCHAR(255) NOT NULL UNIQUE,
+  phone           VARCHAR(20) UNIQUE,
+  gender          ENUM('male', 'female', 'other'),
+  role            ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+  password_hash   VARCHAR(255),
+  upi_id          VARCHAR(255),
+  wallet_balance  DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  is_onboarded    BOOLEAN NOT NULL DEFAULT FALSE,
+  is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+  pity_counter    INT NOT NULL DEFAULT 0,
+  referral_code   VARCHAR(20) UNIQUE,
+  referred_by     VARCHAR(20),
+  coin_balance    INT NOT NULL DEFAULT 0,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+)`;
 import { BILL_TABLE, CREATE_BILL_TABLE_QUERY } from '../models/bill.model.ts';
 import { ERRORS } from '../utils/error.ts';
 

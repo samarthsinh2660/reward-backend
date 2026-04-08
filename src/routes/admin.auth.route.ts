@@ -9,7 +9,7 @@ import { loginAdmin, getMe, refreshAccessToken } from '../controller/auth.contro
 
 const SCHEMA = {
     LOGIN: z.object({
-        phone: z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
+        email: z.string().email('Enter a valid email address'),
         password: z.string().min(6),
     }),
     REFRESH: z.object({
@@ -26,7 +26,7 @@ adminAuthRouter.post(
     validateRequest({ body: SCHEMA.LOGIN }),
     async function (req: Request, res: Response, next: NextFunction) {
         const body: z.infer<typeof SCHEMA.LOGIN> = req.body;
-        const result = await loginAdmin(body.phone, body.password);
+        const result = await loginAdmin(body.email, body.password);
         result.match(
             (data) => res.json(successResponse(data, 'Admin login successful')),
             (error) => next(error)

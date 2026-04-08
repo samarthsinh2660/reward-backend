@@ -5,26 +5,19 @@ import validateRequest from '../middleware/validate-request.middleware.ts';
 import { authLimiter } from '../middleware/ratelimit.middleware.ts';
 import { errorHandler } from '../middleware/error.middleware.ts';
 import { successResponse } from '../utils/response.ts';
-import { verifyOtp, onboardUser, getMe, refreshAccessToken, sendOtp, verifyOtpDirect } from '../controller/auth.controller.ts';
+import { sendOtp, verifyOtpDirect, onboardUser, getMe, refreshAccessToken } from '../controller/auth.controller.ts';
 import { USER_GENDERS } from '../models/user.model.ts';
 
 const SCHEMA = {
     SEND_OTP: z.object({
-        phone: z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
-    }),
-    VERIFY_OTP_DIRECT: z.object({
-        phone: z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
-        otp:   z.string().length(4).regex(/^\d{4}$/, 'OTP must be 4 digits'),
+        email: z.string().email('Enter a valid email address'),
     }),
     VERIFY_OTP: z.object({
-        // Phone must include country code, no + (e.g. 919876543210)
-        phone:        z.string().min(10).max(15).regex(/^\d+$/, 'Phone must be digits only'),
-        // JWT access token returned by MSG91 widget after OTP is verified on device
-        access_token: z.string().min(10),
+        email: z.string().email('Enter a valid email address'),
+        otp:   z.string().length(6).regex(/^\d{6}$/, 'OTP must be 6 digits'),
     }),
     ONBOARD: z.object({
         name:               z.string().min(1).max(150).trim(),
-        email:              z.string().email().optional(),
         gender:             z.enum(USER_GENDERS).optional(),
         referral_code_used: z.string().min(1).max(20).optional(),
     }),
@@ -36,46 +29,28 @@ const SCHEMA = {
 const authRouter = Router();
 
 // ─── POST /api/auth/send-otp ──────────────────────────────────────────────────
-// Sends OTP via MSG91 REST API. Works without the native SDK (Expo Go compatible).
 authRouter.post(
     '/send-otp',
     authLimiter,
     validateRequest({ body: SCHEMA.SEND_OTP }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const { phone }: z.infer<typeof SCHEMA.SEND_OTP> = req.body;
-        const result = await sendOtp(phone);
+        const { email }: z.infer<typeof SCHEMA.SEND_OTP> = req.body;
+        const result = await sendOtp(email);
         result.match(
-            (data) => res.json(successResponse(data, 'OTP sent successfully')),
+            (data) => res.json(successResponse(data, 'OTP sent to your email')),
             (error) => next(error)
         );
     }
 );
 
 // ─── POST /api/auth/verify-otp ────────────────────────────────────────────────
-// Verifies OTP via MSG91 REST API, then finds/creates user. No native SDK needed.
 authRouter.post(
     '/verify-otp',
     authLimiter,
-    validateRequest({ body: SCHEMA.VERIFY_OTP_DIRECT }),
-    async function (req: Request, res: Response, next: NextFunction) {
-        const { phone, otp }: z.infer<typeof SCHEMA.VERIFY_OTP_DIRECT> = req.body;
-        const result = await verifyOtpDirect(phone, otp);
-        result.match(
-            (data) => res.json(successResponse(data, 'OTP verified successfully')),
-            (error) => next(error)
-        );
-    }
-);
-
-// ─── POST /api/auth/verify ────────────────────────────────────────────────────
-// Legacy widget flow — kept for future dev-build support.
-authRouter.post(
-    '/verify',
-    authLimiter,
     validateRequest({ body: SCHEMA.VERIFY_OTP }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const body: z.infer<typeof SCHEMA.VERIFY_OTP> = req.body;
-        const result = await verifyOtp(body.phone, body.access_token);
+        const { email, otp }: z.infer<typeof SCHEMA.VERIFY_OTP> = req.body;
+        const result = await verifyOtpDirect(email, otp);
         result.match(
             (data) => res.json(successResponse(data, 'OTP verified successfully')),
             (error) => next(error)
@@ -93,7 +68,6 @@ authRouter.post(
         const body: z.infer<typeof SCHEMA.ONBOARD> = req.body;
         const result = await onboardUser(req.user!.id, {
             name:               body.name,
-            email:              body.email,
             gender:             body.gender,
             referral_code_used: body.referral_code_used,
         });
