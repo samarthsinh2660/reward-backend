@@ -4,7 +4,7 @@ import { db } from '../database/db.ts';
 import { ERRORS, RequestError } from '../utils/error.ts';
 import { createLogger } from '../utils/logger.ts';
 import {
-    Bill, BillStatus, CreateBillData, QueuedBillData, ProcessedBillData, BILL_TABLE,
+    Bill, BillStatus, CreateBillData, QueuedBillData, ProcessedBillData, BillUploadCounts, BILL_TABLE,
 } from '../models/bill.model.ts';
 
 const logger = createLogger('@bill.repository');
@@ -20,9 +20,9 @@ export interface IBillRepository {
     findByPhash(phash: string): Promise<Result<Bill | null, RequestError>>;
     findByOrderIdAndPlatform(orderId: string, platform: string, excludeUserId: number): Promise<Result<Bill | null, RequestError>>;
     updateStatus(id: number, status: BillStatus, rejectionReason?: string): Promise<Result<void, RequestError>>;
-    setVerified(id: number, rewardAmount: number, chestDecoys: [number, number]): Promise<Result<void, RequestError>>;
+    setVerified(id: number, rewardAmount: number, coinReward: number, chestDecoys: [number, number]): Promise<Result<void, RequestError>>;
     setChestOpened(id: number): Promise<Result<void, RequestError>>;
-    countUserUploads(userId: number): Promise<Result<{ today: number; this_week: number; this_month: number }, RequestError>>;
+    countUserUploads(userId: number): Promise<Result<BillUploadCounts, RequestError>>;
     findAllAdmin(limit: number, before?: number, status?: BillStatus): Promise<Result<Bill[], RequestError>>;
 }
 
@@ -65,7 +65,7 @@ class BillRepositoryImpl implements IBillRepository {
                 `UPDATE ${BILL_TABLE}
                  SET phash = ?, platform = ?, order_id = ?, total_amount = ?, bill_date = ?,
                      status = ?, rejection_reason = ?, extracted_data = ?, fraud_score = ?,
-                     fraud_signals = ?, file_url = ?, reward_amount = ?, chest_decoys = ?
+                     fraud_signals = ?, file_url = ?, reward_amount = ?, coin_reward = ?, chest_decoys = ?
                  WHERE id = ?`,
                 [
                     data.phash,
@@ -80,6 +80,7 @@ class BillRepositoryImpl implements IBillRepository {
                     data.fraud_signals ? JSON.stringify(data.fraud_signals) : null,
                     data.file_url,
                     data.reward_amount,
+                    data.coin_reward,
                     data.chest_decoys ? JSON.stringify(data.chest_decoys) : null,
                     id,
                 ]
@@ -97,8 +98,8 @@ class BillRepositoryImpl implements IBillRepository {
                 `INSERT INTO ${BILL_TABLE}
                  (user_id, file_url, sha256_hash, phash, platform, order_id, total_amount,
                   bill_date, status, rejection_reason, extracted_data, fraud_score,
-                  fraud_signals, reward_amount, chest_decoys)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  fraud_signals, reward_amount, coin_reward, chest_decoys)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     data.user_id,
                     data.file_url,
@@ -114,6 +115,7 @@ class BillRepositoryImpl implements IBillRepository {
                     data.fraud_score,
                     data.fraud_signals ? JSON.stringify(data.fraud_signals) : null,
                     data.reward_amount,
+                    data.coin_reward,
                     data.chest_decoys ? JSON.stringify(data.chest_decoys) : null,
                 ]
             );
@@ -233,14 +235,15 @@ class BillRepositoryImpl implements IBillRepository {
     async setVerified(
         id: number,
         rewardAmount: number,
+        coinReward: number,
         chestDecoys: [number, number]
     ): Promise<Result<void, RequestError>> {
         try {
             await db.query(
                 `UPDATE ${BILL_TABLE}
-                 SET status = 'verified', reward_amount = ?, chest_decoys = ?
+                 SET status = 'verified', reward_amount = ?, coin_reward = ?, chest_decoys = ?
                  WHERE id = ?`,
-                [rewardAmount, JSON.stringify(chestDecoys), id]
+                [rewardAmount, coinReward, JSON.stringify(chestDecoys), id]
             );
             return ok(undefined);
         } catch (error) {
@@ -266,7 +269,7 @@ class BillRepositoryImpl implements IBillRepository {
 
     async countUserUploads(
         userId: number
-    ): Promise<Result<{ today: number; this_week: number; this_month: number }, RequestError>> {
+    ): Promise<Result<BillUploadCounts, RequestError>> {
         try {
             const [rows] = await db.query<any[]>(
                 `SELECT

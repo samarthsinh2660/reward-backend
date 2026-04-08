@@ -54,6 +54,8 @@ class RewardConfigRepositoryImpl implements IRewardConfigRepository {
 
             if (data.reward_min !== undefined) { fields.push('reward_min = ?'); values.push(data.reward_min); }
             if (data.reward_max !== undefined) { fields.push('reward_max = ?'); values.push(data.reward_max); }
+            if (data.coin_min   !== undefined) { fields.push('coin_min = ?');   values.push(data.coin_min);   }
+            if (data.coin_max   !== undefined) { fields.push('coin_max = ?');   values.push(data.coin_max);   }
             if (data.weight     !== undefined) { fields.push('weight = ?');     values.push(data.weight);     }
             if (data.is_active  !== undefined) { fields.push('is_active = ?');  values.push(data.is_active);  }
 

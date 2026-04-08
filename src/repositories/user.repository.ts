@@ -3,7 +3,15 @@ import { ResultSetHeader } from 'mysql2/promise';
 import { db } from '../database/db.ts';
 import { ERRORS, RequestError } from '../utils/error.ts';
 import { createLogger } from '../utils/logger.ts';
-import { User, OnboardUserData, USER_TABLE } from '../models/user.model.ts';
+import {
+    User,
+    OnboardUserData,
+    USER_TABLE,
+    UserProfileSummaryStats,
+    createEmptyUserBillStatusCounts,
+} from '../models/user.model.ts';
+import { BILL_TABLE } from '../models/bill.model.ts';
+import { CASHBACK_TRANSACTIONS_TABLE } from '../models/cashback_transaction.model.ts';
 
 const logger = createLogger('@user.repository');
 
@@ -20,6 +28,7 @@ export interface IUserRepository {
     findByReferralCode(code: string): Promise<Result<User | null, RequestError>>;
     create(email: string): Promise<Result<User, RequestError>>;
     onboard(id: number, data: OnboardUserData, generatedReferralCode: string): Promise<Result<User, RequestError>>;
+    getProfileSummaryStats(id: number): Promise<Result<UserProfileSummaryStats, RequestError>>;
     addCoins(id: number, coins: number): Promise<Result<void, RequestError>>;
     incrementPityCounter(id: number): Promise<Result<void, RequestError>>;
     resetPityCounter(id: number): Promise<Result<void, RequestError>>;
@@ -118,6 +127,53 @@ class UserRepositoryImpl implements IUserRepository {
             return await this.findById(id);
         } catch (error) {
             logger.error('Error onboarding user', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async getProfileSummaryStats(id: number): Promise<Result<UserProfileSummaryStats, RequestError>> {
+        try {
+            const [rows] = await db.query<any[]>(
+                `SELECT
+                    COUNT(*) AS total_bills_uploaded,
+                    SUM(status = 'queued') AS queued_count,
+                    SUM(status = 'processing') AS processing_count,
+                    SUM(status = 'verified') AS verified_count,
+                    SUM(status = 'pending') AS pending_count,
+                    SUM(status = 'rejected') AS rejected_count,
+                    SUM(status = 'failed') AS failed_count,
+                    COALESCE(SUM(CASE WHEN chest_opened = TRUE THEN coin_reward ELSE 0 END), 0) AS total_coins_earned
+                 FROM ${BILL_TABLE}
+                 WHERE user_id = ?`,
+                [id]
+            );
+
+            const [cashbackRows] = await db.query<any[]>(
+                `SELECT COALESCE(SUM(amount), 0) AS total_cashback_earned
+                 FROM ${CASHBACK_TRANSACTIONS_TABLE}
+                 WHERE user_id = ? AND type = 'credit'`,
+                [id]
+            );
+
+            const billRow = rows[0] ?? {};
+            const cashbackRow = cashbackRows[0] ?? {};
+            const statusCounts = createEmptyUserBillStatusCounts();
+
+            statusCounts.queued = Number(billRow.queued_count ?? 0);
+            statusCounts.processing = Number(billRow.processing_count ?? 0);
+            statusCounts.verified = Number(billRow.verified_count ?? 0);
+            statusCounts.pending = Number(billRow.pending_count ?? 0);
+            statusCounts.rejected = Number(billRow.rejected_count ?? 0);
+            statusCounts.failed = Number(billRow.failed_count ?? 0);
+
+            return ok({
+                total_cashback_earned: Number(cashbackRow.total_cashback_earned ?? 0),
+                total_coins_earned: Number(billRow.total_coins_earned ?? 0),
+                total_bills_uploaded: Number(billRow.total_bills_uploaded ?? 0),
+                status_counts: statusCounts,
+            });
+        } catch (error) {
+            logger.error('Error fetching user profile summary stats', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS bills (
   fraud_score      INT NOT NULL DEFAULT 0,              -- total fraud score from bill processor (admin filtering)
   fraud_signals    JSON,                                -- full fraud signal breakdown (admin review)
   reward_amount    DECIMAL(10, 2),                      -- amount assigned by reward engine (before claim)
+  coin_reward      INT,                                 -- coin reward assigned by reward engine (before claim)
   chest_decoys     JSON,                                -- pre-computed decoy amounts for chest UI [n1, n2]
   reward_claimed   BOOLEAN NOT NULL DEFAULT FALSE,      -- true after user opens chest and claims reward
   chest_opened     BOOLEAN NOT NULL DEFAULT FALSE,      -- true after user has viewed the chest opening UI
@@ -103,6 +104,8 @@ CREATE TABLE IF NOT EXISTS reward_config (
   tier_name   VARCHAR(50) NOT NULL,                    -- base / medium / high / jackpot
   reward_min  DECIMAL(10, 2) NOT NULL,
   reward_max  DECIMAL(10, 2) NOT NULL,
+  coin_min    INT NOT NULL,
+  coin_max    INT NOT NULL,
   weight      INT NOT NULL,                            -- higher = more common
   is_active   BOOLEAN NOT NULL DEFAULT TRUE,
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -11,7 +11,13 @@ import { uploadBillImage } from '../services/gcp-storage.service.ts';
 import { drawReward } from './reward.controller.ts';
 import {
     BillView, BillUploadResponse, ChestOpenResponse,
-    BillStatus, ProcessedBillData, toBillView,
+    BillStatus, ProcessedBillData,
+    ProcessedBillBaseData,
+    PersistProcessedBillOutcome,
+    makeRejectedProcessedBillData,
+    makePendingProcessedBillData,
+    makeVerifiedProcessedBillData,
+    toBillView,
 } from '../models/bill.model.ts';
 import { toPlatform } from '../utils/bill.utils.ts';
 import { Paginated } from '../types/pagination.ts';
@@ -27,7 +33,7 @@ async function persistProcessedBill(
     billId: number,
     userId: number,
     data: ProcessedBillData
-): Promise<'saved' | 'duplicate' | 'failed'> {
+): Promise<PersistProcessedBillOutcome> {
     const saveResult = await BillRepository.updateProcessed(billId, data);
     if (saveResult.isOk()) return 'saved';
 
@@ -216,24 +222,24 @@ export async function processBillInBackground(
         'verified';
 
     const platform = toPlatform(extracted_data.platform);
+    const processedBase: ProcessedBillBaseData = {
+        phash,
+        platform,
+        order_id: extracted_data.order_id,
+        total_amount: extracted_data.total_amount,
+        bill_date: extracted_data.order_date,
+        extracted_data,
+        fraud_score: fraudScore,
+        fraud_signals,
+    };
 
     // Auto-rejected — fill in metadata, no image stored
     if (billStatus === 'rejected') {
-        const persist = await persistProcessedBill(billId, userId, {
-            phash,
-            platform,
-            order_id:         extracted_data.order_id,
-            total_amount:     extracted_data.total_amount,
-            bill_date:        extracted_data.order_date,
-            status:           'rejected',
-            rejection_reason: 'Auto-rejected: high fraud score',
-            extracted_data,
-            fraud_score:      fraudScore,
-            fraud_signals,
-            file_url:         null,
-            reward_amount:    null,
-            chest_decoys:     null,
-        });
+        const persist = await persistProcessedBill(
+            billId,
+            userId,
+            makeRejectedProcessedBillData(processedBase, 'Auto-rejected: high fraud score')
+        );
         if (persist !== 'saved') return;
         logger.info(`Bill ${billId} auto-rejected — fraud score ${fraudScore}`);
         return;
@@ -250,21 +256,11 @@ export async function processBillInBackground(
 
     // Pending (manual review) — save with image, no reward yet
     if (billStatus === 'pending') {
-        const persist = await persistProcessedBill(billId, userId, {
-            phash,
-            platform,
-            order_id:         extracted_data.order_id,
-            total_amount:     extracted_data.total_amount,
-            bill_date:        extracted_data.order_date,
-            status:           'pending',
-            rejection_reason: null,
-            extracted_data,
-            fraud_score:      fraudScore,
-            fraud_signals,
-            file_url:         fileUrl,
-            reward_amount:    null,
-            chest_decoys:     null,
-        });
+        const persist = await persistProcessedBill(
+            billId,
+            userId,
+            makePendingProcessedBillData(processedBase, fileUrl)
+        );
         if (persist !== 'saved') return;
         logger.info(`Bill ${billId} queued for manual review — fraud score ${fraudScore}`);
         return;
@@ -287,21 +283,17 @@ export async function processBillInBackground(
 
     const draw = drawReward(tiersResult.value, userResult.value.pity_counter, limits.pity_cap);
 
-    const persist = await persistProcessedBill(billId, userId, {
-        phash,
-        platform,
-        order_id:         extracted_data.order_id,
-        total_amount:     extracted_data.total_amount,
-        bill_date:        extracted_data.order_date,
-        status:           'verified',
-        rejection_reason: null,
-        extracted_data,
-        fraud_score:      fraudScore,
-        fraud_signals,
-        file_url:         fileUrl,
-        reward_amount:    draw.amount,
-        chest_decoys:     draw.decoys,
-    });
+    const persist = await persistProcessedBill(
+        billId,
+        userId,
+        makeVerifiedProcessedBillData(
+            processedBase,
+            fileUrl,
+            draw.amount,
+            draw.coin_amount,
+            draw.decoys
+        )
+    );
     if (persist !== 'saved') return;
 
     // Update pity counter (non-fatal — bill + reward are already saved)
@@ -367,14 +359,16 @@ export const openChest = async (
     if (bill.chest_opened === 1) return err(ERRORS.CHEST_ALREADY_OPENED);
     if (!bill.reward_amount) return err(ERRORS.BILL_NOT_VERIFIED);
     if (!bill.chest_decoys) return err(ERRORS.BILL_NOT_VERIFIED);
+    if (!bill.coin_reward) return err(ERRORS.BILL_NOT_VERIFIED);
 
     // Atomically credit wallet + create cashback transaction
-    const creditResult = await CashbackTransactionRepository.creditWallet(
-        userId,
-        billId,
-        bill.reward_amount,
-        `Bill reward — ${bill.platform ?? 'unknown'} ₹${bill.total_amount ?? '?'}`
-    );
+    const creditResult = await CashbackTransactionRepository.creditWalletAndCoins({
+        user_id: userId,
+        bill_id: billId,
+        amount: bill.reward_amount,
+        coins: bill.coin_reward,
+        description: `Bill reward — ${bill.platform ?? 'unknown'} ₹${bill.total_amount ?? '?'}`,
+    });
     if (creditResult.isErr()) return err(creditResult.error);
 
     // Mark chest as opened
@@ -386,8 +380,10 @@ export const openChest = async (
     return ok({
         bill_id: billId,
         your_reward: Number(bill.reward_amount),
+        coin_reward: Number(bill.coin_reward),
         decoys: bill.chest_decoys,
-        wallet_balance: creditResult.value,
+        wallet_balance: creditResult.value.wallet_balance,
+        coin_balance: creditResult.value.coin_balance,
     });
 };
 
@@ -438,7 +434,12 @@ export const adminApproveBill = async (
 
     const draw = drawReward(tiersResult.value, userResult.value.pity_counter, limitsResult.value.pity_cap);
 
-    const setResult = await BillRepository.setVerified(billId, draw.amount, draw.decoys);
+    const setResult = await BillRepository.setVerified(
+        billId,
+        draw.amount,
+        draw.coin_amount,
+        draw.decoys
+    );
     if (setResult.isErr()) return err(setResult.error);
 
     // Update pity counter (non-fatal — bill is already saved)

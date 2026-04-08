@@ -10,6 +10,7 @@ import authRouter from './routes/auth.route.ts';
 import adminAuthRouter from './routes/admin.auth.route.ts';
 import billRouter from './routes/bill.route.ts';
 import adminRewardRouter from './routes/admin.reward.route.ts';
+import userRouter from './routes/user.route.ts';
 import { createLogger } from './utils/logger.ts';
 
 const logger = createLogger('app');
@@ -56,6 +57,7 @@ async function start() {
     // Routes
     app.use('/api/health', healthRouter);
     app.use('/api/auth', authRouter);
+    app.use('/api/users', userRouter);
     app.use('/api/admin/auth', adminAuthRouter);
     app.use('/api/bills', billRouter);
     app.use('/api/admin', adminRewardRouter);

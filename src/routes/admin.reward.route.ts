@@ -12,11 +12,16 @@ const SCHEMA = {
     UPDATE_TIER: z.object({
         reward_min: z.number().positive().optional(),
         reward_max: z.number().positive().optional(),
+        coin_min:   z.number().int().positive().optional(),
+        coin_max:   z.number().int().positive().optional(),
         weight:     z.number().int().min(1).optional(),
         is_active:  z.boolean().optional(),
     }).refine(
         (d) => d.reward_min === undefined || d.reward_max === undefined || d.reward_min < d.reward_max,
         { message: 'reward_min must be less than reward_max' }
+    ).refine(
+        (d) => d.coin_min === undefined || d.coin_max === undefined || d.coin_min < d.coin_max,
+        { message: 'coin_min must be less than coin_max' }
     ),
 
     UPDATE_LIMITS: z.object({

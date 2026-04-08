@@ -34,3 +34,18 @@ export interface CashbackTransaction extends RowDataPacket {
     description: string | null;
     created_at: Date;
 }
+
+// ── Input / response types ───────────────────────────────────────────────────
+
+export type CreditWalletAndCoinsData = {
+    user_id: number;
+    bill_id: number;
+    amount: number;
+    coins: number;
+    description: string;
+};
+
+export type WalletAndCoinBalance = {
+    wallet_balance: number;
+    coin_balance: number;
+};

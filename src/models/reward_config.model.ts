@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS reward_config (
   tier_name   VARCHAR(50) NOT NULL,
   reward_min  DECIMAL(10, 2) NOT NULL,
   reward_max  DECIMAL(10, 2) NOT NULL,
+  coin_min    INT NOT NULL,
+  coin_max    INT NOT NULL,
   weight      INT NOT NULL,
   is_active   BOOLEAN NOT NULL DEFAULT TRUE,
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -41,6 +43,8 @@ export interface RewardConfig extends RowDataPacket {
     tier_name: RewardTierName;
     reward_min: number;
     reward_max: number;
+    coin_min: number;
+    coin_max: number;
     weight: number;
     is_active: number;   // TINYINT — 0 | 1
     created_at: Date;
@@ -61,6 +65,8 @@ export interface UploadLimits extends RowDataPacket {
 export type UpdateRewardTierData = {
     reward_min?: number;
     reward_max?: number;
+    coin_min?: number;
+    coin_max?: number;
     weight?: number;
     is_active?: boolean;
 };
@@ -76,6 +82,7 @@ export type UpdateUploadLimitsData = {
 
 export type RewardDraw = {
     amount: number;                     // actual reward to credit
+    coin_amount: number;                // actual coins to credit
     tier_name: RewardTierName;
     pity_triggered: boolean;
     decoys: [number, number];           // 2 higher-tier amounts for chest UI

@@ -55,6 +55,7 @@ export function drawReward(
     }
 
     const amount = _round(_randomBetween(winningTier.reward_min, winningTier.reward_max));
+    const coinAmount = _randomIntBetween(winningTier.coin_min, winningTier.coin_max);
 
     // ── Decoys (for chest UI — never credited) ─────────────────────────────────
     const winningIdx = sorted.findIndex(t => t.id === winningTier.id);
@@ -76,6 +77,7 @@ export function drawReward(
 
     return {
         amount,
+        coin_amount: coinAmount,
         tier_name: winningTier.tier_name,
         pity_triggered: pityTriggered,
         decoys,
@@ -93,4 +95,10 @@ function _randomBetween(min: number, max: number): number {
 
 function _round(value: number): number {
     return Math.round(value * 100) / 100;
+}
+
+function _randomIntBetween(min: number, max: number): number {
+    const lo = Math.ceil(Number(min));
+    const hi = Math.floor(Number(max));
+    return Math.floor(Math.random() * (hi - lo + 1)) + lo;
 }

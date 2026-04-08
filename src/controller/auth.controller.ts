@@ -8,14 +8,13 @@ import { LoginResponse } from '../types/login.ts';
 import { createLogger } from '../utils/logger.ts';
 import { sendOtpEmail } from '../services/email.service.ts';
 import { OTP_EXPIRY_SECONDS, OTP_MAX_ATTEMPTS, NODE_ENV } from '../config/env.ts';
+import { OtpEntry, SendOtpResponse, RefreshTokenResponse } from '../models/auth.model.ts';
 
 const logger = createLogger('@auth.controller');
 
 const REFERRAL_COINS = 50;
 
 // ─── In-memory OTP store ──────────────────────────────────────────────────────
-
-type OtpEntry = { code: string; expiresAt: number; attempts: number };
 const otpStore = new Map<string, OtpEntry>();
 
 function generateOtp(): string {
@@ -35,7 +34,7 @@ function generateReferralCode(userId: number): string {
 
 export const sendOtp = async (
     email: string
-): Promise<Result<{ message: string }, RequestError>> => {
+): Promise<Result<SendOtpResponse, RequestError>> => {
     try {
         const code = generateOtp();
         const expiresAt = Date.now() + OTP_EXPIRY_SECONDS * 1000;
@@ -185,7 +184,7 @@ export const loginAdmin = async (
 
 export const refreshAccessToken = async (
     refreshToken: string
-): Promise<Result<{ token: string }, RequestError>> => {
+): Promise<Result<RefreshTokenResponse, RequestError>> => {
     try {
         const decoded = decodeRefreshToken(refreshToken);
         const newToken = createAuthToken({ id: decoded.id, is_admin: decoded.is_admin, email: decoded.email });

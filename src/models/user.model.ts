@@ -1,4 +1,5 @@
 import { RowDataPacket } from 'mysql2';
+import { BILL_STATUSES, BillStatus } from './bill.model.ts';
 
 export const USER_TABLE = 'users';
 
@@ -49,6 +50,17 @@ export type UserView = {
     created_at: Date;
 };
 
+export type UserBillStatusCounts = Record<BillStatus, number>;
+
+export type UserProfileSummaryStats = {
+    total_cashback_earned: number;
+    total_coins_earned: number;
+    total_bills_uploaded: number;
+    status_counts: UserBillStatusCounts;
+};
+
+export type UserProfileSummaryView = UserView & UserProfileSummaryStats;
+
 // ── Input types ───────────────────────────────────────────────────────────────
 
 export type CreateUserData = {
@@ -66,6 +78,13 @@ export type AdminLoginData = {
     password: string;
 };
 
+export function createEmptyUserBillStatusCounts(): UserBillStatusCounts {
+    return BILL_STATUSES.reduce<UserBillStatusCounts>((counts, status) => {
+        counts[status] = 0;
+        return counts;
+    }, {} as UserBillStatusCounts);
+}
+
 // ── Converter ─────────────────────────────────────────────────────────────────
 
 export function toUserView(row: User): UserView {
@@ -82,5 +101,15 @@ export function toUserView(row: User): UserView {
         referral_code: row.referral_code,
         coin_balance: row.coin_balance,
         created_at: row.created_at,
+    };
+}
+
+export function toUserProfileSummaryView(
+    row: User,
+    stats: UserProfileSummaryStats
+): UserProfileSummaryView {
+    return {
+        ...toUserView(row),
+        ...stats,
     };
 }
