@@ -15,7 +15,7 @@ export interface IBillRepository {
     updateProcessed(id: number, data: ProcessedBillData): Promise<Result<void, RequestError>>;
     create(data: CreateBillData): Promise<Result<Bill, RequestError>>;
     findById(id: number): Promise<Result<Bill | null, RequestError>>;
-    findByUserId(userId: number, limit: number, before?: number): Promise<Result<Bill[], RequestError>>;
+    findByUserId(userId: number, limit: number, before?: number, statuses?: BillStatus[], search?: string): Promise<Result<Bill[], RequestError>>;
     findBySha256Hash(hash: string): Promise<Result<Bill | null, RequestError>>;
     findByPhash(phash: string): Promise<Result<Bill | null, RequestError>>;
     findByOrderIdAndPlatform(orderId: string, platform: string, excludeUserId: number): Promise<Result<Bill | null, RequestError>>;
@@ -142,22 +142,37 @@ class BillRepositoryImpl implements IBillRepository {
     async findByUserId(
         userId: number,
         limit: number,
-        before?: number
+        before?: number,
+        statuses?: BillStatus[],
+        search?: string
     ): Promise<Result<Bill[], RequestError>> {
         try {
-            const [rows] = before
-                ? await db.query<Bill[]>(
-                    `SELECT * FROM ${BILL_TABLE}
-                     WHERE user_id = ? AND id < ?
-                     ORDER BY id DESC LIMIT ?`,
-                    [userId, before, limit]
-                )
-                : await db.query<Bill[]>(
-                    `SELECT * FROM ${BILL_TABLE}
-                     WHERE user_id = ?
-                     ORDER BY id DESC LIMIT ?`,
-                    [userId, limit]
+            const conditions: string[] = ['user_id = ?'];
+            const params: (string | number)[] = [userId];
+
+            if (before) {
+                conditions.push('id < ?');
+                params.push(before);
+            }
+            if (statuses && statuses.length > 0) {
+                conditions.push(`status IN (${statuses.map(() => '?').join(',')})`);
+                params.push(...statuses);
+            }
+            if (search) {
+                const like = `%${search}%`;
+                conditions.push(
+                    `(platform LIKE ? OR order_id LIKE ? OR CAST(total_amount AS CHAR) LIKE ? OR extracted_data LIKE ?)`
                 );
+                params.push(like, like, like, like);
+            }
+
+            params.push(limit);
+            const where = `WHERE ${conditions.join(' AND ')}`;
+
+            const [rows] = await db.query<Bill[]>(
+                `SELECT * FROM ${BILL_TABLE} ${where} ORDER BY id DESC LIMIT ?`,
+                params
+            );
             return ok(rows);
         } catch (error) {
             logger.error('Error finding bills by user id', error);

@@ -312,9 +312,11 @@ export async function processBillInBackground(
 export const listBills = async (
     userId: number,
     limit: number,
-    before?: number
+    before?: number,
+    statuses?: BillStatus[],
+    search?: string
 ): Promise<Result<Paginated<BillView>, RequestError>> => {
-    const result = await BillRepository.findByUserId(userId, limit + 1, before);
+    const result = await BillRepository.findByUserId(userId, limit + 1, before, statuses, search);
     if (result.isErr()) return err(result.error);
 
     const rows = result.value;

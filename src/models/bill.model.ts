@@ -87,6 +87,8 @@ export type BillView = {
     reward_claimed: boolean;
     chest_opened: boolean;
     created_at: Date;
+    file_url: string | null;
+    extracted_data: object | null;
 };
 
 // ── Input types ───────────────────────────────────────────────────────────────
@@ -242,5 +244,7 @@ export function toBillView(row: Bill): BillView {
         reward_claimed: row.reward_claimed === 1,
         chest_opened: row.chest_opened === 1,
         created_at: row.created_at,
+        file_url: row.file_url,
+        extracted_data: row.extracted_data ?? null,
     };
 }

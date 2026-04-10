@@ -12,10 +12,14 @@ import { USER_TABLE } from '../models/user.model.ts';
 
 const logger = createLogger('@cashback_transaction.repository');
 
+export type DailyEarning = { date: string; earned: number };
+
 export interface ICashbackTransactionRepository {
     creditWallet(userId: number, billId: number, amount: number, description: string): Promise<Result<number, RequestError>>;
     creditWalletAndCoins(data: CreditWalletAndCoinsData): Promise<Result<WalletAndCoinBalance, RequestError>>;
     getByUserId(userId: number, limit?: number): Promise<Result<CashbackTransaction[], RequestError>>;
+    getDailyEarnings(userId: number, days: number): Promise<Result<DailyEarning[], RequestError>>;
+    getMonthlyTotal(userId: number): Promise<Result<number, RequestError>>;
 }
 
 class CashbackTransactionRepositoryImpl implements ICashbackTransactionRepository {
@@ -94,6 +98,40 @@ class CashbackTransactionRepositoryImpl implements ICashbackTransactionRepositor
             return ok(rows);
         } catch (error) {
             logger.error('Error fetching cashback transactions', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async getDailyEarnings(userId: number, days: number): Promise<Result<DailyEarning[], RequestError>> {
+        try {
+            const [rows] = await db.query<any[]>(
+                `SELECT DATE(created_at) AS date, SUM(amount) AS earned
+                 FROM ${CASHBACK_TRANSACTIONS_TABLE}
+                 WHERE user_id = ? AND type = 'credit'
+                   AND created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                 GROUP BY DATE(created_at)
+                 ORDER BY date ASC`,
+                [userId, days]
+            );
+            return ok(rows.map(r => ({ date: String(r.date), earned: Number(r.earned) })));
+        } catch (error) {
+            logger.error('Error fetching daily earnings', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async getMonthlyTotal(userId: number): Promise<Result<number, RequestError>> {
+        try {
+            const [rows] = await db.query<any[]>(
+                `SELECT COALESCE(SUM(amount), 0) AS total
+                 FROM ${CASHBACK_TRANSACTIONS_TABLE}
+                 WHERE user_id = ? AND type = 'credit'
+                   AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`,
+                [userId]
+            );
+            return ok(Number(rows[0]?.total ?? 0));
+        } catch (error) {
+            logger.error('Error fetching monthly total', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }

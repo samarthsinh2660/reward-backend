@@ -10,12 +10,15 @@ import { ERRORS } from '../utils/error.ts';
 import {
     acceptBill, processBillInBackground, listBills, getBill, openChest,
 } from '../controller/bill.controller.ts';
+import { BILL_STATUSES, BillStatus } from '../models/bill.model.ts';
 import { fireAndForget } from '../services/bill-queue.service.ts';
 
 const SCHEMA = {
     LIST: z.object({
         limit:  z.coerce.number().int().min(1).max(50).default(20),
         before: z.coerce.number().int().optional(),
+        status: z.string().max(200).optional(),   // comma-separated: "verified" | "pending,queued,processing" | etc.
+        search: z.string().max(100).optional(),
     }),
     ID_PARAM: z.object({
         id: z.coerce.number().int().min(1),
@@ -73,7 +76,10 @@ billRouter.get(
     validateRequest({ query: SCHEMA.LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
         const query = SCHEMA.LIST.parse(req.query);
-        const result = await listBills(req.user!.id, query.limit, query.before);
+        const statuses = query.status
+            ? (query.status.split(',').map(s => s.trim()).filter(s => (BILL_STATUSES as readonly string[]).includes(s)) as BillStatus[])
+            : undefined;
+        const result = await listBills(req.user!.id, query.limit, query.before, statuses?.length ? statuses : undefined, query.search);
         result.match(
             (data) => res.json(successResponse(data, 'Bills fetched')),
             (error) => next(error)
