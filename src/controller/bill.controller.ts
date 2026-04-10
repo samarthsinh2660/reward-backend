@@ -6,7 +6,7 @@ import { BillRepository } from '../repositories/bill.repository.ts';
 import { RewardConfigRepository } from '../repositories/reward_config.repository.ts';
 import { CashbackTransactionRepository } from '../repositories/cashback_transaction.repository.ts';
 import { UserRepository } from '../repositories/user.repository.ts';
-import { callBillProcessor } from '../services/bill-processor.service.ts';
+import { callBillProcessor, enrichLineItems } from '../services/bill-processor.service.ts';
 import { uploadBillImage } from '../services/gcp-storage.service.ts';
 import { drawReward } from './reward.controller.ts';
 import {
@@ -168,7 +168,11 @@ export async function processBillInBackground(
         return;
     }
 
-    const { extracted_data, phash, fraud_signals } = processorData;
+    const { phash, fraud_signals } = processorData;
+    const extracted_data = {
+        ...processorData.extracted_data,
+        items: enrichLineItems(processorData.extracted_data.items),
+    };
     const fraudScore = fraud_signals.fraud_score;
 
     // Unsupported platform — bill is real but we don't support it yet
