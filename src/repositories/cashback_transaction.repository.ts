@@ -7,12 +7,11 @@ import {
     CASHBACK_TRANSACTIONS_TABLE,
     CreditWalletAndCoinsData,
     WalletAndCoinBalance,
+    DailyEarning,
 } from '../models/cashback_transaction.model.ts';
 import { USER_TABLE } from '../models/user.model.ts';
 
 const logger = createLogger('@cashback_transaction.repository');
-
-export type DailyEarning = { date: string; earned: number };
 
 export interface ICashbackTransactionRepository {
     creditWallet(userId: number, billId: number, amount: number, description: string): Promise<Result<number, RequestError>>;

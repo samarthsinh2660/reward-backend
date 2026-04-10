@@ -6,6 +6,7 @@ import { UserView, OnboardUserData, toUserView } from '../models/user.model.ts';
 import { createAuthToken, createRefreshToken, decodeRefreshToken, TokenData } from '../utils/jwt.ts';
 import { LoginResponse } from '../types/login.ts';
 import { createLogger } from '../utils/logger.ts';
+import { generateOtp } from '../utils/otp.ts';
 import { sendOtpEmail } from '../services/email.service.ts';
 import { OTP_EXPIRY_SECONDS, OTP_MAX_ATTEMPTS, NODE_ENV } from '../config/env.ts';
 import { OtpEntry, SendOtpResponse, RefreshTokenResponse } from '../models/auth.model.ts';
@@ -14,12 +15,8 @@ const logger = createLogger('@auth.controller');
 
 const REFERRAL_COINS = 50;
 
-// ─── In-memory OTP store ──────────────────────────────────────────────────────
+// ── In-memory OTP store (keyed by lowercase email) ───────────────────────────
 const otpStore = new Map<string, OtpEntry>();
-
-function generateOtp(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
-}
 
 function generateReferralCode(userId: number): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';

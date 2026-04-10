@@ -6,6 +6,7 @@ import { createLogger } from '../utils/logger.ts';
 import {
     User,
     OnboardUserData,
+    UpdateProfileData,
     USER_TABLE,
     UserProfileSummaryStats,
     createEmptyUserBillStatusCounts,
@@ -28,6 +29,8 @@ export interface IUserRepository {
     findByReferralCode(code: string): Promise<Result<User | null, RequestError>>;
     create(email: string): Promise<Result<User, RequestError>>;
     onboard(id: number, data: OnboardUserData, generatedReferralCode: string): Promise<Result<User, RequestError>>;
+    updateProfile(id: number, data: UpdateProfileData): Promise<Result<User, RequestError>>;
+    updateEmail(id: number, newEmail: string): Promise<Result<User, RequestError>>;
     getProfileSummaryStats(id: number): Promise<Result<UserProfileSummaryStats, RequestError>>;
     addCoins(id: number, coins: number): Promise<Result<void, RequestError>>;
     incrementPityCounter(id: number): Promise<Result<void, RequestError>>;
@@ -127,6 +130,49 @@ class UserRepositoryImpl implements IUserRepository {
             return await this.findById(id);
         } catch (error) {
             logger.error('Error onboarding user', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async updateProfile(id: number, data: UpdateProfileData): Promise<Result<User, RequestError>> {
+        try {
+            const fields: string[] = [];
+            const values: unknown[] = [];
+
+            if (data.name   !== undefined) { fields.push('name = ?');   values.push(data.name); }
+            if (data.phone  !== undefined) { fields.push('phone = ?');  values.push(data.phone); }
+            if (data.gender !== undefined) { fields.push('gender = ?'); values.push(data.gender); }
+            if (data.upi_id !== undefined) { fields.push('upi_id = ?'); values.push(data.upi_id); }
+
+            if (fields.length === 0) return await this.findById(id);
+
+            values.push(id);
+            await db.query(
+                `UPDATE ${USER_TABLE} SET ${fields.join(', ')} WHERE id = ?`,
+                values
+            );
+            return await this.findById(id);
+        } catch (error) {
+            logger.error('Error updating user profile', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async updateEmail(id: number, newEmail: string): Promise<Result<User, RequestError>> {
+        try {
+            const [existing] = await db.query<User[]>(
+                `SELECT id FROM ${USER_TABLE} WHERE email = ?`, [newEmail.toLowerCase()]
+            );
+            if (existing.length > 0 && existing[0].id !== id) {
+                return err(ERRORS.EMAIL_ALREADY_EXISTS);
+            }
+            await db.query(
+                `UPDATE ${USER_TABLE} SET email = ? WHERE id = ?`,
+                [newEmail.toLowerCase(), id]
+            );
+            return await this.findById(id);
+        } catch (error) {
+            logger.error('Error updating user email', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }

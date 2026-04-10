@@ -35,7 +35,14 @@ export interface CashbackTransaction extends RowDataPacket {
     created_at: Date;
 }
 
-// ── Input / response types ───────────────────────────────────────────────────
+// ── View / response types ────────────────────────────────────────────────────
+
+export type DailyEarning = {
+    date:   string;   // 'YYYY-MM-DD'
+    earned: number;
+};
+
+// ── Input types ───────────────────────────────────────────────────────────────
 
 export type CreditWalletAndCoinsData = {
     user_id: number;

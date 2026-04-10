@@ -49,6 +49,7 @@ export const ERRORS = {
     NO_PASSWORD_SET:           new RequestError('Admin password not configured',    30009, 500),
     INVALID_OTP:               new RequestError('OTP verification failed. Please try again.', 30010, 401),
     OTP_SEND_FAILED:           new RequestError('Failed to send OTP. Please try again.',       30011, 502),
+    EMAIL_ALREADY_EXISTS:      new RequestError('This email is already in use by another account.', 30012, 409),
 
     // Bill domain (4xxxx)
     BILL_NOT_FOUND:               new RequestError('Bill not found',                                     40001, 404),

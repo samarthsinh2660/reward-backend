@@ -1,5 +1,6 @@
 import { RowDataPacket } from 'mysql2';
 import { BILL_STATUSES, BillStatus } from './bill.model.ts';
+import { DailyEarning } from './cashback_transaction.model.ts';
 
 export const USER_TABLE = 'users';
 
@@ -42,12 +43,20 @@ export type UserView = {
     phone: string | null;
     gender: UserGender | null;
     role: UserRole;
+    upi_id: string | null;
     wallet_balance: number;
     is_onboarded: boolean;
     pity_counter: number;
     referral_code: string | null;
     coin_balance: number;
     created_at: Date;
+};
+
+export type UpdateProfileData = {
+    name?:   string;
+    phone?:  string | null;
+    gender?: UserGender | null;
+    upi_id?: string | null;
 };
 
 export type UserBillStatusCounts = Record<BillStatus, number>;
@@ -60,6 +69,25 @@ export type UserProfileSummaryStats = {
 };
 
 export type UserProfileSummaryView = UserView & UserProfileSummaryStats;
+
+// ── Wallet view types ─────────────────────────────────────────────────────────
+
+export type WalletTransactionView = {
+    id:          number;
+    bill_id:     number | null;
+    amount:      number;
+    type:        string;
+    description: string | null;
+    created_at:  string;
+};
+
+export type WalletSummaryView = {
+    wallet_balance:      number;
+    coin_balance:        number;
+    monthly_earned:      number;
+    recent_transactions: WalletTransactionView[];
+    chart_data:          DailyEarning[];
+};
 
 // ── Input types ───────────────────────────────────────────────────────────────
 
@@ -95,6 +123,7 @@ export function toUserView(row: User): UserView {
         phone: row.phone,
         gender: row.gender,
         role: row.role,
+        upi_id: row.upi_id,
         wallet_balance: Number(row.wallet_balance),
         is_onboarded: row.is_onboarded === 1,
         pity_counter: row.pity_counter,
