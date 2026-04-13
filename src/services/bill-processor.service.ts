@@ -27,6 +27,7 @@ export type BillExtractedData = {
     taxes: number | null;
     items: BillLineItem[];
     currency: string;
+    delivery_area: string | null;
     delivery_city: string | null;
     delivery_state: string | null;
     delivery_pincode: string | null;

@@ -4,12 +4,14 @@ import { PORT, CORS_ORIGIN } from './config/env.ts';
 import { notFoundHandler, errorHandler } from './middleware/error.middleware.ts';
 import { limiter } from './middleware/ratelimit.middleware.ts';
 import { connectToDatabase } from './database/db.ts';
+import { ensureAdminAnalyticsSchema } from './database/admin-analytics.bootstrap.ts';
 import { BillRepository } from './repositories/bill.repository.ts';
 import healthRouter from './routes/health.route.ts';
 import authRouter from './routes/auth.route.ts';
 import adminAuthRouter from './routes/admin.auth.route.ts';
 import billRouter from './routes/bill.route.ts';
 import adminRewardRouter from './routes/admin.reward.route.ts';
+import adminAnalyticsRouter from './routes/admin.analytics.route.ts';
 import userRouter from './routes/user.route.ts';
 import { createLogger } from './utils/logger.ts';
 
@@ -39,6 +41,7 @@ async function recoverStrandedBills(): Promise<void> {
 async function start() {
     // Connect to MySQL before accepting requests
     await connectToDatabase();
+    await ensureAdminAnalyticsSchema();
     await recoverStrandedBills();
 
     const app: Application = express();
@@ -61,6 +64,7 @@ async function start() {
     app.use('/api/admin/auth', adminAuthRouter);
     app.use('/api/bills', billRouter);
     app.use('/api/admin', adminRewardRouter);
+    app.use('/api/admin/analytics', adminAnalyticsRouter);
 
     // Error handlers — must be last
     app.use(notFoundHandler);

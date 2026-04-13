@@ -54,6 +54,7 @@ Return ONLY valid JSON matching this exact schema — no markdown, no explanatio
     { "name": "string", "hsn_code": "string or null", "quantity": number or null, "unit_price": number or null, "total_price": number or null }
   ],
   "currency": "INR",
+  "delivery_area": "string or null",
   "delivery_city": "string or null",
   "delivery_state": "string or null",
   "delivery_pincode": "string or null",
@@ -71,6 +72,7 @@ Rules:
 - fbo_email: the platform support email address visible on the invoice (e.g. support@zeptonow.com). null if not found.
 - customer_name: the name in the "Bill To" or "Ship To" section. null if not found.
 - items: every line item. Extract ALL items — do not truncate. Empty array [] only if truly none found.
+- delivery_area: locality, neighborhood, or area name from the delivery address when clearly present. null if not found.
 - seller_gstin: the seller/FBO GSTIN (15 chars). null if not found.
 - Never hallucinate. If a field is absent from the text, use null.
 """
@@ -245,6 +247,7 @@ def parse_bill(ocr_text: str) -> ParseResult:
                 taxes=_to_float(parsed.get("taxes")),
                 items=items,
                 currency=parsed.get("currency", "INR"),
+                delivery_area=_to_str(parsed.get("delivery_area")),
                 delivery_city=_to_str(parsed.get("delivery_city")),
                 delivery_state=_to_str(parsed.get("delivery_state")),
                 delivery_pincode=_to_str(parsed.get("delivery_pincode")),
@@ -471,6 +474,7 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
             break
 
     # ── Delivery address fields ───────────────────────────────────────────────
+    delivery_area     = None
     delivery_city     = None
     delivery_state    = None
     delivery_pincode  = None
@@ -484,6 +488,16 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
     m = re.search(r'\b(\d{6})\b', text)
     if m:
         delivery_pincode = m.group(1)
+
+    area_patterns = [
+        r'(?:Deliver(?:ed)?\s*To|Delivery\s*Address|Address)\s*[:\-]?\s*(.+?)(?:\n|$)',
+        r'\b([A-Za-z][A-Za-z\s.-]{2,}),\s*[A-Za-z\s.-]+,\s*\d{6}\b',
+    ]
+    for pat in area_patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            delivery_area = m.group(1).strip()[:100]
+            break
 
     # ── Items ─────────────────────────────────────────────────────────────────
     items: list[BillItem] = []
@@ -563,6 +577,7 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
         taxes=taxes,
         items=items,
         currency="INR",
+        delivery_area=delivery_area,
         delivery_city=delivery_city,
         delivery_state=delivery_state,
         delivery_pincode=delivery_pincode,

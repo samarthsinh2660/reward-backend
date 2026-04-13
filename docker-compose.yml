@@ -19,6 +19,7 @@ services:
       - billpay_db_data:/var/lib/mysql
       - ./src/database/01-tables.sql:/docker-entrypoint-initdb.d/01-tables.sql
       - ./src/database/02-seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+      - ./src/database/03-admin-analytics.sql:/docker-entrypoint-initdb.d/03-admin-analytics.sql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uuser", "-ppassword"]
       interval: 10s

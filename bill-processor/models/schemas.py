@@ -30,6 +30,7 @@ class ExtractedBillData(BaseModel):
     taxes: Optional[float] = None
     items: List[BillItem] = []
     currency: str = "INR"
+    delivery_area: Optional[str] = None
     delivery_city: Optional[str] = None
     delivery_state: Optional[str] = None
     delivery_pincode: Optional[str] = None
