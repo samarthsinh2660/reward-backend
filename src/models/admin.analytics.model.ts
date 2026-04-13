@@ -1,3 +1,4 @@
+import { RowDataPacket } from 'mysql2';
 import { BillStatus } from './bill.model.ts';
 
 export const ANALYTICS_GEOGRAPHY_GROUPS = ['region', 'state', 'city', 'area'] as const;
@@ -192,3 +193,131 @@ export type AdminAnalyticsDashboardView = {
         user_activity_graphs: UserActivityPoint[];
     };
 };
+
+export interface AdminAnalyticsCountRow extends RowDataPacket {
+    total: number | null;
+}
+
+export interface AdminAnalyticsTotalSalesRow extends RowDataPacket {
+    total_sales_amount: number | null;
+}
+
+export interface AdminAnalyticsDashboardBillRow extends RowDataPacket {
+    total_bills_uploaded: number | null;
+    valid_bills_count: number | null;
+    invalid_bills_count: number | null;
+    pending_bills_count: number | null;
+}
+
+export interface AdminAnalyticsDailyUploadRow extends RowDataPacket {
+    period_label: string;
+    uploads_count: number | null;
+    verified_count: number | null;
+    rejected_count: number | null;
+    pending_count: number | null;
+}
+
+export interface AdminAnalyticsCompanyDistributionDbRow extends RowDataPacket {
+    company_id: number | string | null;
+    company_name: string;
+    bill_count: number | null;
+    item_scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+}
+
+export interface AdminAnalyticsBrandDistributionDbRow extends RowDataPacket {
+    brand_id: number | string | null;
+    brand_name: string;
+    scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+    company_count: number | null;
+    product_count: number | null;
+}
+
+export interface AdminAnalyticsProductDistributionDbRow extends RowDataPacket {
+    product_id: number | string | null;
+    product_name: string;
+    brand_name: string | null;
+    category_l1: string | null;
+    scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+    company_count: number | null;
+}
+
+export interface AdminAnalyticsCategoryInsightDbRow extends RowDataPacket {
+    category_l1: string;
+    scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+    product_count: number | null;
+    brand_count: number | null;
+}
+
+export interface AdminAnalyticsSalesTrendDbRow extends RowDataPacket {
+    period: string;
+    actual_revenue: number | null;
+    bill_count: number | null;
+    item_scan_count: number | null;
+    active_users: number | null;
+}
+
+export interface AdminAnalyticsRealtimeBillRow extends RowDataPacket {
+    uploads_last_24h: number | null;
+    verified_last_24h: number | null;
+    active_users_last_7d: number | null;
+}
+
+export interface AdminAnalyticsRealtimeItemRow extends RowDataPacket {
+    sales_last_24h: number | null;
+}
+
+export interface AdminAnalyticsUserActivityDbRow extends RowDataPacket {
+    period: string;
+    active_users: number | null;
+    uploading_users: number | null;
+    avg_uploads_per_user: number | null;
+}
+
+export interface AdminAnalyticsGeographyDistributionDbRow extends RowDataPacket {
+    geography_label: string;
+    bill_count: number | null;
+    item_scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+    company_count: number | null;
+    brand_count: number | null;
+    product_count: number | null;
+}
+
+export interface AdminAnalyticsItemScanDbRow extends RowDataPacket {
+    bill_item_id: number | string;
+    bill_id: number;
+    user_id: number;
+    company_id: number | string | null;
+    company_name: string;
+    brand_id: number | string | null;
+    brand_name: string | null;
+    product_id: number | string | null;
+    product_name: string | null;
+    product_name_raw: string;
+    category_l1: string | null;
+    quantity: number | null;
+    unit_price: number | null;
+    line_amount: number | null;
+    city: string | null;
+    area: string | null;
+    bill_date: string | null;
+    bill_status: BillStatus;
+}
+
+export interface AdminAnalyticsDrilldownDbRow extends RowDataPacket {
+    id: number | string | null;
+    name: string;
+    bill_count: number | null;
+    scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+}

@@ -1,8 +1,14 @@
-import { RowDataPacket } from 'mysql2';
 import { err, ok, Result } from 'neverthrow';
 import { db } from '../database/db.ts';
 import {
     AdminAnalyticsDashboardView,
+    AdminAnalyticsBrandDistributionDbRow,
+    AdminAnalyticsCategoryInsightDbRow,
+    AdminAnalyticsCompanyDistributionDbRow,
+    AdminAnalyticsCountRow,
+    AdminAnalyticsDailyUploadRow,
+    AdminAnalyticsDashboardBillRow,
+    AdminAnalyticsDrilldownDbRow,
     AnalyticsFilters,
     AnalyticsListResponse,
     BrandDistributionRow,
@@ -13,10 +19,17 @@ import {
     DrilldownRow,
     GeographyDistributionFilters,
     GeographyDistributionRow,
+    AdminAnalyticsGeographyDistributionDbRow,
     ItemScanRow,
-    PaginationMeta,
     ProductDistributionRow,
     SalesTrendPoint,
+    AdminAnalyticsItemScanDbRow,
+    AdminAnalyticsProductDistributionDbRow,
+    AdminAnalyticsRealtimeBillRow,
+    AdminAnalyticsRealtimeItemRow,
+    AdminAnalyticsSalesTrendDbRow,
+    AdminAnalyticsTotalSalesRow,
+    AdminAnalyticsUserActivityDbRow,
     UserActivityPoint,
 } from '../models/admin.analytics.model.ts';
 import { BillStatus } from '../models/bill.model.ts';
@@ -157,7 +170,8 @@ function whereClause(conditions: string[]): string {
     return conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 }
 
-function pushSharedBillConditions(
+// Reuse the same date/location/status filters across both bill-level and item-level analytics queries.
+function appendCommonBillConditions(
     filters: AnalyticsFilters,
     params: SqlParam[],
     conditions: string[],
@@ -197,18 +211,18 @@ function pushSharedBillConditions(
     }
 }
 
-function buildBillConditions(
+// Bill-level queries aggregate from bills first.
+// Brand/product filters therefore use EXISTS against extracted item rows.
+function buildBillLevelConditions(
     filters: AnalyticsFilters,
     params: SqlParam[],
-    options?: {
-        defaultStatuses?: BillStatus[];
-        includeDimensionFilters?: boolean;
-    }
+    includeDimensionFilters = false,
+    defaultStatuses?: BillStatus[]
 ): string[] {
     const conditions: string[] = [];
-    pushSharedBillConditions(filters, params, conditions, options?.defaultStatuses);
+    appendCommonBillConditions(filters, params, conditions, defaultStatuses);
 
-    if (!options?.includeDimensionFilters) {
+    if (!includeDimensionFilters) {
         return conditions;
     }
 
@@ -240,16 +254,16 @@ function buildBillConditions(
     return conditions;
 }
 
-function buildItemConditions(
+// Item-level queries already join extracted item rows,
+// so brand/product/search filters apply directly on the joined dataset.
+function buildItemLevelConditions(
     filters: AnalyticsFilters,
     params: SqlParam[],
-    options?: {
-        defaultStatuses?: BillStatus[];
-        searchColumns?: string[];
-    }
+    defaultStatuses?: BillStatus[],
+    searchColumns: string[] = []
 ): string[] {
     const conditions: string[] = [];
-    pushSharedBillConditions(filters, params, conditions, options?.defaultStatuses);
+    appendCommonBillConditions(filters, params, conditions, defaultStatuses);
 
     if (filters.company_id) {
         conditions.push(`${companyIdExpr()} = ?`);
@@ -263,10 +277,10 @@ function buildItemConditions(
         conditions.push(`${productIdExpr()} = ?`);
         params.push(filters.product_id);
     }
-    if (filters.search && options?.searchColumns && options.searchColumns.length > 0) {
+    if (filters.search && searchColumns.length > 0) {
         const like = `%${filters.search}%`;
-        conditions.push(`(${options.searchColumns.map((column) => `${column} LIKE ?`).join(' OR ')})`);
-        for (let index = 0; index < options.searchColumns.length; index++) {
+        conditions.push(`(${searchColumns.map((column) => `${column} LIKE ?`).join(' OR ')})`);
+        for (let index = 0; index < searchColumns.length; index++) {
             params.push(like);
         }
     }
@@ -274,145 +288,13 @@ function buildItemConditions(
     return conditions;
 }
 
-function buildAnalyticsList<T>(
-    filters: AnalyticsFilters,
-    rows: T[],
-    pagination: PaginationMeta
-): AnalyticsListResponse<T> {
+function buildAnalyticsList<T>(filters: AnalyticsFilters, rows: T[], pagination: AnalyticsListResponse<T>['pagination']): AnalyticsListResponse<T> {
     return {
         filters: pickAnalyticsFilters(filters),
         rows,
         pagination,
     };
 }
-
-type CountRow = RowDataPacket & {
-    total: number | null;
-};
-
-type TotalSalesRow = RowDataPacket & {
-    total_sales_amount: number | null;
-};
-
-type DashboardBillRow = RowDataPacket & {
-    total_bills_uploaded: number | null;
-    valid_bills_count: number | null;
-    invalid_bills_count: number | null;
-    pending_bills_count: number | null;
-};
-
-type DailyUploadRow = RowDataPacket & {
-    period_label: string;
-    uploads_count: number | null;
-    verified_count: number | null;
-    rejected_count: number | null;
-    pending_count: number | null;
-};
-
-type CompanyDistributionDbRow = RowDataPacket & {
-    company_id: number | string | null;
-    company_name: string;
-    bill_count: number | null;
-    item_scan_count: number | null;
-    total_quantity: number | null;
-    total_sales_amount: number | null;
-};
-
-type BrandDistributionDbRow = RowDataPacket & {
-    brand_id: number | string | null;
-    brand_name: string;
-    scan_count: number | null;
-    total_quantity: number | null;
-    total_sales_amount: number | null;
-    company_count: number | null;
-    product_count: number | null;
-};
-
-type ProductDistributionDbRow = RowDataPacket & {
-    product_id: number | string | null;
-    product_name: string;
-    brand_name: string | null;
-    category_l1: string | null;
-    scan_count: number | null;
-    total_quantity: number | null;
-    total_sales_amount: number | null;
-    company_count: number | null;
-};
-
-type CategoryInsightDbRow = RowDataPacket & {
-    category_l1: string;
-    scan_count: number | null;
-    total_quantity: number | null;
-    total_sales_amount: number | null;
-    product_count: number | null;
-    brand_count: number | null;
-};
-
-type SalesTrendDbRow = RowDataPacket & {
-    period: string;
-    actual_revenue: number | null;
-    bill_count: number | null;
-    item_scan_count: number | null;
-    active_users: number | null;
-};
-
-type RealtimeBillRow = RowDataPacket & {
-    uploads_last_24h: number | null;
-    verified_last_24h: number | null;
-    active_users_last_7d: number | null;
-};
-
-type RealtimeItemRow = RowDataPacket & {
-    sales_last_24h: number | null;
-};
-
-type UserActivityDbRow = RowDataPacket & {
-    period: string;
-    active_users: number | null;
-    uploading_users: number | null;
-    avg_uploads_per_user: number | null;
-};
-
-type GeographyDistributionDbRow = RowDataPacket & {
-    geography_label: string;
-    bill_count: number | null;
-    item_scan_count: number | null;
-    total_quantity: number | null;
-    total_sales_amount: number | null;
-    company_count: number | null;
-    brand_count: number | null;
-    product_count: number | null;
-};
-
-type ItemScanDbRow = RowDataPacket & {
-    bill_item_id: number | string;
-    bill_id: number;
-    user_id: number;
-    company_id: number | string | null;
-    company_name: string;
-    brand_id: number | string | null;
-    brand_name: string | null;
-    product_id: number | string | null;
-    product_name: string | null;
-    product_name_raw: string;
-    category_l1: string | null;
-    quantity: number | null;
-    unit_price: number | null;
-    line_amount: number | null;
-    city: string | null;
-    area: string | null;
-    bill_date: string | null;
-    bill_status: BillStatus;
-};
-
-type DrilldownDbRow = RowDataPacket & {
-    id: number | string | null;
-    name: string;
-    bill_count: number | null;
-    scan_count: number | null;
-    total_quantity: number | null;
-    total_sales_amount: number | null;
-};
 
 export interface IAdminAnalyticsRepository {
     getDashboard(filters: AnalyticsFilters): Promise<Result<AdminAnalyticsDashboardView, RequestError>>;
@@ -431,10 +313,10 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
         try {
             const billParams: SqlParam[] = [];
             const billWhere = whereClause(
-                buildBillConditions(filters, billParams, { includeDimensionFilters: true })
-            );
+                    buildBillLevelConditions(filters, billParams, true)
+                );
 
-            const [billRows] = await db.query<DashboardBillRow[]>(
+            const [billRows] = await db.query<AdminAnalyticsDashboardBillRow[]>(
                 `SELECT
                     COUNT(*) AS total_bills_uploaded,
                     SUM(CASE WHEN b.status = 'verified' THEN 1 ELSE 0 END) AS valid_bills_count,
@@ -445,7 +327,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 billParams
             );
 
-            const [dailyRows] = await db.query<DailyUploadRow[]>(
+            const [dailyRows] = await db.query<AdminAnalyticsDailyUploadRow[]>(
                 `SELECT
                     DATE_FORMAT(DATE(b.created_at), '%Y-%m-%d') AS period_label,
                     COUNT(*) AS uploads_count,
@@ -483,12 +365,10 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
 
             const itemParams: SqlParam[] = [];
             const itemWhere = whereClause(
-                buildItemConditions(filters, itemParams, {
-                    defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                })
-            );
+                    buildItemLevelConditions(filters, itemParams, DEFAULT_ANALYTICS_STATUSES)
+                );
 
-            const [categoryRows] = await db.query<CategoryInsightDbRow[]>(
+            const [categoryRows] = await db.query<AdminAnalyticsCategoryInsightDbRow[]>(
                 `SELECT
                     ${categoryExpr()} AS category_l1,
                     COUNT(*) AS scan_count,
@@ -505,7 +385,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 itemParams
             );
 
-            const [trendRows] = await db.query<SalesTrendDbRow[]>(
+            const [trendRows] = await db.query<AdminAnalyticsSalesTrendDbRow[]>(
                 `SELECT
                     DATE_FORMAT(${billDateExpr()}, '%Y-%m-%d') AS period,
                     COALESCE(SUM(${lineAmountExpr()}), 0) AS actual_revenue,
@@ -523,10 +403,10 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
 
             const realtimeBillParams: SqlParam[] = [];
             const realtimeBillWhere = whereClause(
-                buildBillConditions(filters, realtimeBillParams, { includeDimensionFilters: true })
-            );
+                    buildBillLevelConditions(filters, realtimeBillParams, true)
+                );
 
-            const [realtimeBillRows] = await db.query<RealtimeBillRow[]>(
+            const [realtimeBillRows] = await db.query<AdminAnalyticsRealtimeBillRow[]>(
                 `SELECT
                     SUM(CASE WHEN b.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 ELSE 0 END) AS uploads_last_24h,
                     SUM(CASE WHEN b.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) AND b.status = 'verified' THEN 1 ELSE 0 END) AS verified_last_24h,
@@ -537,13 +417,11 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
             );
 
             const realtimeItemParams: SqlParam[] = [];
-            const realtimeItemConditions = buildItemConditions(filters, realtimeItemParams, {
-                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-            });
+            const realtimeItemConditions = buildItemLevelConditions(filters, realtimeItemParams, DEFAULT_ANALYTICS_STATUSES);
             realtimeItemConditions.push(`b.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)`);
             const realtimeItemWhere = whereClause(realtimeItemConditions);
 
-            const [realtimeItemRows] = await db.query<RealtimeItemRow[]>(
+            const [realtimeItemRows] = await db.query<AdminAnalyticsRealtimeItemRow[]>(
                 `SELECT COALESCE(SUM(${lineAmountExpr()}), 0) AS sales_last_24h
                  FROM bills b
                  ${itemsJoin()}
@@ -551,7 +429,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 realtimeItemParams
             );
 
-            const [userActivityRows] = await db.query<UserActivityDbRow[]>(
+            const [userActivityRows] = await db.query<AdminAnalyticsUserActivityDbRow[]>(
                 `SELECT
                     DATE_FORMAT(DATE(b.created_at), '%Y-%m-%d') AS period,
                     COUNT(DISTINCT b.user_id) AS active_users,
@@ -565,7 +443,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 billParams
             );
 
-            const billSummary = billRows[0] ?? ({} as DashboardBillRow);
+            const billSummary = billRows[0] ?? ({} as AdminAnalyticsDashboardBillRow);
             const totalBills = toNumber(billSummary.total_bills_uploaded);
             const validBills = toNumber(billSummary.valid_bills_count);
             const invalidBills = toNumber(billSummary.invalid_bills_count);
@@ -637,10 +515,12 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
     ): Promise<Result<AnalyticsListResponse<CompanyDistributionRow>, RequestError>> {
         try {
             const params: SqlParam[] = [];
-            const conditions = buildItemConditions(filters, params, {
-                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                searchColumns: ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()],
-            });
+            const conditions = buildItemLevelConditions(
+                filters,
+                params,
+                DEFAULT_ANALYTICS_STATUSES,
+                ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()]
+            );
             const baseQuery = `
                 SELECT
                     ${companyIdExpr()} AS company_id,
@@ -655,7 +535,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 GROUP BY ${companyIdExpr()}, ${companyNameExpr()}
             `;
 
-            const rows = await this.runPagedQuery<CompanyDistributionDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, item_scan_count DESC');
+            const rows = await this.runPagedQuery<AdminAnalyticsCompanyDistributionDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, item_scan_count DESC');
             const total = await this.countGroupedRows(baseQuery, params);
             const totalSales = await this.sumGroupedSales(baseQuery, params);
 
@@ -683,10 +563,12 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
     ): Promise<Result<AnalyticsListResponse<BrandDistributionRow>, RequestError>> {
         try {
             const params: SqlParam[] = [];
-            const conditions = buildItemConditions(filters, params, {
-                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                searchColumns: ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()],
-            });
+            const conditions = buildItemLevelConditions(
+                filters,
+                params,
+                DEFAULT_ANALYTICS_STATUSES,
+                ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()]
+            );
             const baseQuery = `
                 SELECT
                     ${brandIdExpr()} AS brand_id,
@@ -702,7 +584,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 GROUP BY ${brandIdExpr()}, ${brandNameExpr()}
             `;
 
-            const rows = await this.runPagedQuery<BrandDistributionDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, scan_count DESC');
+            const rows = await this.runPagedQuery<AdminAnalyticsBrandDistributionDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, scan_count DESC');
             const total = await this.countGroupedRows(baseQuery, params);
             const totalSales = await this.sumGroupedSales(baseQuery, params);
 
@@ -731,10 +613,12 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
     ): Promise<Result<AnalyticsListResponse<ProductDistributionRow>, RequestError>> {
         try {
             const params: SqlParam[] = [];
-            const conditions = buildItemConditions(filters, params, {
-                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                searchColumns: ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()],
-            });
+            const conditions = buildItemLevelConditions(
+                filters,
+                params,
+                DEFAULT_ANALYTICS_STATUSES,
+                ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()]
+            );
             const baseQuery = `
                 SELECT
                     ${productIdExpr()} AS product_id,
@@ -751,7 +635,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 GROUP BY ${productIdExpr()}, ${productNameExpr()}, ${brandNameExpr()}, ${categoryExpr()}
             `;
 
-            const rows = await this.runPagedQuery<ProductDistributionDbRow>(baseQuery, params, filters, 'ORDER BY scan_count DESC, total_sales_amount DESC');
+            const rows = await this.runPagedQuery<AdminAnalyticsProductDistributionDbRow>(baseQuery, params, filters, 'ORDER BY scan_count DESC, total_sales_amount DESC');
             const total = await this.countGroupedRows(baseQuery, params);
 
             return ok(buildAnalyticsList(
@@ -787,9 +671,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
             const geographyLabelExpr = geographyMap[filters.group_by];
 
             const params: SqlParam[] = [];
-            const conditions = buildItemConditions(filters, params, {
-                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-            });
+            const conditions = buildItemLevelConditions(filters, params, DEFAULT_ANALYTICS_STATUSES);
             const baseQuery = `
                 SELECT
                     ${geographyLabelExpr} AS geography_label,
@@ -806,7 +688,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 GROUP BY ${geographyLabelExpr}
             `;
 
-            const rows = await this.runPagedQuery<GeographyDistributionDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, item_scan_count DESC');
+            const rows = await this.runPagedQuery<AdminAnalyticsGeographyDistributionDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, item_scan_count DESC');
             const total = await this.countGroupedRows(baseQuery, params);
 
             return ok(buildAnalyticsList(
@@ -834,10 +716,12 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
     ): Promise<Result<AnalyticsListResponse<ItemScanRow>, RequestError>> {
         try {
             const params: SqlParam[] = [];
-            const conditions = buildItemConditions(filters, params, {
-                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                searchColumns: ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()],
-            });
+            const conditions = buildItemLevelConditions(
+                filters,
+                params,
+                DEFAULT_ANALYTICS_STATUSES,
+                ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()]
+            );
             const baseQuery = `
                 SELECT
                     ${itemScanIdExpr()} AS bill_item_id,
@@ -863,7 +747,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 ${whereClause(conditions)}
             `;
 
-            const rows = await this.runPagedQuery<ItemScanDbRow>(
+            const rows = await this.runPagedQuery<AdminAnalyticsItemScanDbRow>(
                 baseQuery,
                 params,
                 filters,
@@ -945,10 +829,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
     ): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>> {
         try {
             const params: SqlParam[] = [];
-            const conditions = buildItemConditions(filters, params, {
-                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                searchColumns,
-            });
+            const conditions = buildItemLevelConditions(filters, params, DEFAULT_ANALYTICS_STATUSES, searchColumns);
             const baseQuery = `
                 SELECT
                     ${idExpr} AS id,
@@ -963,7 +844,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 GROUP BY ${idExpr}, ${nameExpr}
             `;
 
-            const rows = await this.runPagedQuery<DrilldownDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, scan_count DESC');
+            const rows = await this.runPagedQuery<AdminAnalyticsDrilldownDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, scan_count DESC');
             const total = await this.countGroupedRows(baseQuery, params);
 
             return ok(buildAnalyticsList(
@@ -984,7 +865,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
         }
     }
 
-    private async runPagedQuery<T extends RowDataPacket>(
+    private async runPagedQuery<T>(
         baseQuery: string,
         params: SqlParam[],
         filters: AnalyticsFilters,
@@ -1001,7 +882,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
     }
 
     private async countGroupedRows(baseQuery: string, params: SqlParam[]): Promise<number> {
-        const [rows] = await db.query<CountRow[]>(
+        const [rows] = await db.query<AdminAnalyticsCountRow[]>(
             `SELECT COUNT(*) AS total FROM (${baseQuery}) analytics_groups`,
             params
         );
@@ -1009,7 +890,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
     }
 
     private async sumGroupedSales(baseQuery: string, params: SqlParam[]): Promise<number> {
-        const [rows] = await db.query<TotalSalesRow[]>(
+        const [rows] = await db.query<AdminAnalyticsTotalSalesRow[]>(
             `SELECT COALESCE(SUM(total_sales_amount), 0) AS total_sales_amount FROM (${baseQuery}) analytics_groups`,
             params
         );
