@@ -1,10 +1,4 @@
-import { RowDataPacket } from 'mysql2';
 import { BillStatus } from './bill.model.ts';
-
-export const ANALYTICS_COMPANY_TABLE = 'analytics_companies';
-export const ANALYTICS_BRAND_TABLE = 'analytics_brands';
-export const ANALYTICS_PRODUCT_TABLE = 'analytics_products';
-export const BILL_ITEMS_TABLE = 'bill_items';
 
 export const ANALYTICS_GEOGRAPHY_GROUPS = ['region', 'state', 'city', 'area'] as const;
 export type AnalyticsGeographyGroup = typeof ANALYTICS_GEOGRAPHY_GROUPS[number];
@@ -49,74 +43,18 @@ export type AnalyticsFilterSummary = {
     statuses: BillStatus[] | null;
 };
 
-export type UpsertCompanyInput = {
-    platform: string | null;
-    merchant_name: string | null;
+export type PaginationMeta = {
+    page: number;
+    limit: number;
+    total: number;
+    total_pages: number;
 };
 
-export type UpsertProductInput = {
-    raw_name: string;
-    normalized_name: string;
-    brand_id: number | null;
-    brand_name: string | null;
-    category_l1: string | null;
-    category_l2: string | null;
-    unit_type: string | null;
-    pack_size: string | null;
+export type AnalyticsListResponse<T> = {
+    filters: AnalyticsFilterSummary;
+    rows: T[];
+    pagination: PaginationMeta;
 };
-
-export type BillAnalyticsSnapshot = {
-    company_id: number | null;
-    merchant_name: string | null;
-    region: string | null;
-    state: string | null;
-    city: string | null;
-    area: string | null;
-    postal_code: string | null;
-};
-
-export type SyncedBillItem = {
-    company_id: number | null;
-    brand_id: number | null;
-    product_id: number | null;
-    product_name_raw: string;
-    product_name_normalized: string | null;
-    category_l1: string | null;
-    category_l2: string | null;
-    quantity: number | null;
-    unit_type: string | null;
-    unit_price: number | null;
-    line_amount: number;
-    currency_code: string;
-    city: string | null;
-    area: string | null;
-    bill_date: string | null;
-};
-
-export interface AnalyticsCompany extends RowDataPacket {
-    id: number;
-    platform_code: string;
-    company_name: string;
-    company_type: string | null;
-    active_status: number;
-}
-
-export interface AnalyticsBrand extends RowDataPacket {
-    id: number;
-    brand_name: string;
-}
-
-export interface AnalyticsProduct extends RowDataPacket {
-    id: number;
-    product_key: string;
-    product_name: string;
-    normalized_name: string;
-    brand_id: number | null;
-    category_l1: string | null;
-    category_l2: string | null;
-    unit_type: string | null;
-    pack_size: string | null;
-}
 
 export type DailyUploadStat = {
     period_label: string;
@@ -212,13 +150,6 @@ export type ItemScanRow = {
     area: string | null;
     bill_date: string | null;
     bill_status: BillStatus;
-};
-
-export type PaginationMeta = {
-    page: number;
-    limit: number;
-    total: number;
-    total_pages: number;
 };
 
 export type DrilldownRow = {

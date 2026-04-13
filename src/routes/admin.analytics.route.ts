@@ -1,4 +1,4 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import z from 'zod';
 import { authenticate, requireAdmin } from '../middleware/auth.middleware.ts';
 import validateRequest from '../middleware/validate-request.middleware.ts';
@@ -70,36 +70,20 @@ function parseStatuses(raw: string | undefined): BillStatus[] | undefined {
     return statuses.length > 0 ? statuses : undefined;
 }
 
-function toAnalyticsFilters(query: z.infer<typeof SCHEMA.LIST>): AnalyticsFilters {
-    return {
-        ...query,
-        statuses: parseStatuses(query.statuses),
-    };
-}
-
-function toDrilldownFilters(query: z.infer<typeof SCHEMA.LIST>): DrilldownFilters {
-    return {
-        ...query,
-        statuses: parseStatuses(query.statuses),
-    };
-}
-
-function toGeographyFilters(query: z.infer<typeof SCHEMA.GEOGRAPHY>): GeographyDistributionFilters {
-    return {
-        ...query,
-        statuses: parseStatuses(query.statuses),
-    };
-}
-
 const adminAnalyticsRouter = Router();
 
 adminAnalyticsRouter.use(authenticate, requireAdmin);
 
+// GET /api/admin/analytics/dashboard
 adminAnalyticsRouter.get(
     '/dashboard',
     validateRequest({ query: SCHEMA.LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const filters = toAnalyticsFilters(SCHEMA.LIST.parse(req.query));
+        const query: z.infer<typeof SCHEMA.LIST> = SCHEMA.LIST.parse(req.query);
+        const filters: AnalyticsFilters = {
+            ...query,
+            statuses: parseStatuses(query.statuses),
+        };
         const result = await getAdminAnalyticsDashboard(filters);
         result.match(
             (data) => res.json(successResponse(data, 'Admin analytics dashboard fetched')),
@@ -108,11 +92,16 @@ adminAnalyticsRouter.get(
     }
 );
 
+// GET /api/admin/analytics/company-distribution
 adminAnalyticsRouter.get(
     '/company-distribution',
     validateRequest({ query: SCHEMA.LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const filters = toAnalyticsFilters(SCHEMA.LIST.parse(req.query));
+        const query: z.infer<typeof SCHEMA.LIST> = SCHEMA.LIST.parse(req.query);
+        const filters: AnalyticsFilters = {
+            ...query,
+            statuses: parseStatuses(query.statuses),
+        };
         const result = await getCompanyDistribution(filters);
         result.match(
             (data) => res.json(successResponse(data, 'Company distribution fetched')),
@@ -121,11 +110,16 @@ adminAnalyticsRouter.get(
     }
 );
 
+// GET /api/admin/analytics/brand-distribution
 adminAnalyticsRouter.get(
     '/brand-distribution',
     validateRequest({ query: SCHEMA.LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const filters = toAnalyticsFilters(SCHEMA.LIST.parse(req.query));
+        const query: z.infer<typeof SCHEMA.LIST> = SCHEMA.LIST.parse(req.query);
+        const filters: AnalyticsFilters = {
+            ...query,
+            statuses: parseStatuses(query.statuses),
+        };
         const result = await getBrandDistribution(filters);
         result.match(
             (data) => res.json(successResponse(data, 'Brand distribution fetched')),
@@ -134,11 +128,16 @@ adminAnalyticsRouter.get(
     }
 );
 
+// GET /api/admin/analytics/product-distribution
 adminAnalyticsRouter.get(
     '/product-distribution',
     validateRequest({ query: SCHEMA.LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const filters = toAnalyticsFilters(SCHEMA.LIST.parse(req.query));
+        const query: z.infer<typeof SCHEMA.LIST> = SCHEMA.LIST.parse(req.query);
+        const filters: AnalyticsFilters = {
+            ...query,
+            statuses: parseStatuses(query.statuses),
+        };
         const result = await getProductDistribution(filters);
         result.match(
             (data) => res.json(successResponse(data, 'Product distribution fetched')),
@@ -147,11 +146,16 @@ adminAnalyticsRouter.get(
     }
 );
 
+// GET /api/admin/analytics/geography-distribution
 adminAnalyticsRouter.get(
     '/geography-distribution',
     validateRequest({ query: SCHEMA.GEOGRAPHY }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const filters = toGeographyFilters(SCHEMA.GEOGRAPHY.parse(req.query));
+        const query: z.infer<typeof SCHEMA.GEOGRAPHY> = SCHEMA.GEOGRAPHY.parse(req.query);
+        const filters: GeographyDistributionFilters = {
+            ...query,
+            statuses: parseStatuses(query.statuses),
+        };
         const result = await getGeographyDistribution(filters);
         result.match(
             (data) => res.json(successResponse(data, 'Geography distribution fetched')),
@@ -160,11 +164,16 @@ adminAnalyticsRouter.get(
     }
 );
 
+// GET /api/admin/analytics/item-scans
 adminAnalyticsRouter.get(
     '/item-scans',
     validateRequest({ query: SCHEMA.LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const filters = toAnalyticsFilters(SCHEMA.LIST.parse(req.query));
+        const query: z.infer<typeof SCHEMA.LIST> = SCHEMA.LIST.parse(req.query);
+        const filters: AnalyticsFilters = {
+            ...query,
+            statuses: parseStatuses(query.statuses),
+        };
         const result = await getItemScans(filters);
         result.match(
             (data) => res.json(successResponse(data, 'Item scans fetched')),
@@ -173,12 +182,18 @@ adminAnalyticsRouter.get(
     }
 );
 
+// GET /api/admin/analytics/companies/:id/products
 adminAnalyticsRouter.get(
     '/companies/:id/products',
     validateRequest({ params: SCHEMA.ID_PARAM, query: SCHEMA.LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const filters = toDrilldownFilters(SCHEMA.LIST.parse(req.query));
-        const result = await getCompanyProducts(Number(req.params.id), filters);
+        const params: z.infer<typeof SCHEMA.ID_PARAM> = SCHEMA.ID_PARAM.parse(req.params);
+        const query: z.infer<typeof SCHEMA.LIST> = SCHEMA.LIST.parse(req.query);
+        const filters: DrilldownFilters = {
+            ...query,
+            statuses: parseStatuses(query.statuses),
+        };
+        const result = await getCompanyProducts(params.id, filters);
         result.match(
             (data) => res.json(successResponse(data, 'Company products fetched')),
             (error) => next(error)
@@ -186,12 +201,18 @@ adminAnalyticsRouter.get(
     }
 );
 
+// GET /api/admin/analytics/brands/:id/products
 adminAnalyticsRouter.get(
     '/brands/:id/products',
     validateRequest({ params: SCHEMA.ID_PARAM, query: SCHEMA.LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const filters = toDrilldownFilters(SCHEMA.LIST.parse(req.query));
-        const result = await getBrandProducts(Number(req.params.id), filters);
+        const params: z.infer<typeof SCHEMA.ID_PARAM> = SCHEMA.ID_PARAM.parse(req.params);
+        const query: z.infer<typeof SCHEMA.LIST> = SCHEMA.LIST.parse(req.query);
+        const filters: DrilldownFilters = {
+            ...query,
+            statuses: parseStatuses(query.statuses),
+        };
+        const result = await getBrandProducts(params.id, filters);
         result.match(
             (data) => res.json(successResponse(data, 'Brand products fetched')),
             (error) => next(error)
@@ -199,12 +220,18 @@ adminAnalyticsRouter.get(
     }
 );
 
+// GET /api/admin/analytics/products/:id/companies
 adminAnalyticsRouter.get(
     '/products/:id/companies',
     validateRequest({ params: SCHEMA.ID_PARAM, query: SCHEMA.LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
-        const filters = toDrilldownFilters(SCHEMA.LIST.parse(req.query));
-        const result = await getProductCompanies(Number(req.params.id), filters);
+        const params: z.infer<typeof SCHEMA.ID_PARAM> = SCHEMA.ID_PARAM.parse(req.params);
+        const query: z.infer<typeof SCHEMA.LIST> = SCHEMA.LIST.parse(req.query);
+        const filters: DrilldownFilters = {
+            ...query,
+            statuses: parseStatuses(query.statuses),
+        };
+        const result = await getProductCompanies(params.id, filters);
         result.match(
             (data) => res.json(successResponse(data, 'Product companies fetched')),
             (error) => next(error)

@@ -7,7 +7,6 @@ import { RewardConfigRepository } from '../repositories/reward_config.repository
 import { CashbackTransactionRepository } from '../repositories/cashback_transaction.repository.ts';
 import { UserRepository } from '../repositories/user.repository.ts';
 import { callBillProcessor, enrichLineItems } from '../services/bill-processor.service.ts';
-import { syncBillAnalyticsSnapshot } from '../services/admin.analytics-sync.service.ts';
 import { uploadBillImage } from '../services/gcp-storage.service.ts';
 import { drawReward } from './reward.controller.ts';
 import {
@@ -246,7 +245,6 @@ export async function processBillInBackground(
             makeRejectedProcessedBillData(processedBase, 'Auto-rejected: high fraud score')
         );
         if (persist !== 'saved') return;
-        await syncBillAnalyticsSnapshot(billId);
         logger.info(`Bill ${billId} auto-rejected — fraud score ${fraudScore}`);
         return;
     }
@@ -268,7 +266,6 @@ export async function processBillInBackground(
             makePendingProcessedBillData(processedBase, fileUrl)
         );
         if (persist !== 'saved') return;
-        await syncBillAnalyticsSnapshot(billId);
         logger.info(`Bill ${billId} queued for manual review — fraud score ${fraudScore}`);
         return;
     }
@@ -302,7 +299,6 @@ export async function processBillInBackground(
         )
     );
     if (persist !== 'saved') return;
-    await syncBillAnalyticsSnapshot(billId);
 
     // Update pity counter (non-fatal — bill + reward are already saved)
     const pityResult = draw.pity_triggered

@@ -4,7 +4,6 @@ import { PORT, CORS_ORIGIN } from './config/env.ts';
 import { notFoundHandler, errorHandler } from './middleware/error.middleware.ts';
 import { limiter } from './middleware/ratelimit.middleware.ts';
 import { connectToDatabase } from './database/db.ts';
-import { ensureAdminAnalyticsSchema } from './database/admin-analytics.bootstrap.ts';
 import { BillRepository } from './repositories/bill.repository.ts';
 import healthRouter from './routes/health.route.ts';
 import authRouter from './routes/auth.route.ts';
@@ -41,7 +40,6 @@ async function recoverStrandedBills(): Promise<void> {
 async function start() {
     // Connect to MySQL before accepting requests
     await connectToDatabase();
-    await ensureAdminAnalyticsSchema();
     await recoverStrandedBills();
 
     const app: Application = express();

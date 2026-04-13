@@ -1,18 +1,10 @@
+import { RowDataPacket } from 'mysql2';
 import { err, ok, Result } from 'neverthrow';
 import { db } from '../database/db.ts';
-import { BillStatus } from '../models/bill.model.ts';
 import {
-    ANALYTICS_BRAND_TABLE,
-    ANALYTICS_COMPANY_TABLE,
-    ANALYTICS_PRODUCT_TABLE,
     AdminAnalyticsDashboardView,
-    AnalyticsBrand,
-    AnalyticsFilterSummary,
-    AnalyticsCompany,
     AnalyticsFilters,
-    AnalyticsProduct,
-    BILL_ITEMS_TABLE,
-    BillAnalyticsSnapshot,
+    AnalyticsListResponse,
     BrandDistributionRow,
     CategoryInsightRow,
     CompanyDistributionRow,
@@ -25,18 +17,14 @@ import {
     PaginationMeta,
     ProductDistributionRow,
     SalesTrendPoint,
-    SyncedBillItem,
-    UpsertCompanyInput,
-    UpsertProductInput,
     UserActivityPoint,
 } from '../models/admin.analytics.model.ts';
+import { BillStatus } from '../models/bill.model.ts';
 import {
+    buildRegionCaseExpression,
     calculatePagination,
-    formatCompanyName,
-    inferCompanyType,
     percentage,
     pickAnalyticsFilters,
-    slugify,
     toNumber,
 } from '../utils/admin.analytics.utils.ts';
 import { ERRORS, RequestError } from '../utils/error.ts';
@@ -45,77 +33,240 @@ import { createLogger } from '../utils/logger.ts';
 const logger = createLogger('@admin.analytics.repository');
 
 const DEFAULT_ANALYTICS_STATUSES: BillStatus[] = ['verified'];
-const BILL_DATE_EXPR = `COALESCE(b.bill_date, DATE(b.created_at))`;
 
-type QueryPagination<T> = {
-    filters: AnalyticsFilterSummary;
-    rows: T[];
-    pagination: PaginationMeta;
-};
+type SqlParam = string | number;
 
-function buildBillConditions(
+function merchantNameExpr(billAlias = 'b'): string {
+    return `NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${billAlias}.extracted_data, '$.merchant_name'))), '')`;
+}
+
+function stateExpr(billAlias = 'b'): string {
+    return `NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${billAlias}.extracted_data, '$.delivery_state'))), '')`;
+}
+
+function cityExpr(billAlias = 'b'): string {
+    return `NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${billAlias}.extracted_data, '$.delivery_city'))), '')`;
+}
+
+function areaExpr(billAlias = 'b'): string {
+    return `NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${billAlias}.extracted_data, '$.delivery_area'))), '')`;
+}
+
+function regionExpr(billAlias = 'b'): string {
+    return buildRegionCaseExpression(`LOWER(COALESCE(${stateExpr(billAlias)}, ''))`);
+}
+
+function billDateExpr(billAlias = 'b'): string {
+    return `COALESCE(
+        ${billAlias}.bill_date,
+        STR_TO_DATE(JSON_UNQUOTE(JSON_EXTRACT(${billAlias}.extracted_data, '$.order_date')), '%Y-%m-%d'),
+        DATE(${billAlias}.created_at)
+    )`;
+}
+
+function companyNameExpr(billAlias = 'b'): string {
+    return `CASE
+        WHEN NULLIF(TRIM(${billAlias}.platform), '') IS NOT NULL
+            THEN CONCAT(UPPER(LEFT(TRIM(${billAlias}.platform), 1)), SUBSTRING(LOWER(TRIM(${billAlias}.platform)), 2))
+        ELSE COALESCE(${merchantNameExpr(billAlias)}, 'Unknown')
+    END`;
+}
+
+function companyKeyExpr(billAlias = 'b'): string {
+    return `LOWER(TRIM(COALESCE(NULLIF(${billAlias}.platform, ''), ${merchantNameExpr(billAlias)}, 'unknown')))`;
+}
+
+function brandNameExpr(itemAlias = 'jt'): string {
+    return `COALESCE(NULLIF(TRIM(${itemAlias}.brand_name), ''), 'Unbranded')`;
+}
+
+function brandKeyExpr(itemAlias = 'jt'): string {
+    return `LOWER(TRIM(COALESCE(NULLIF(${itemAlias}.brand_name, ''), 'Unbranded')))`;
+}
+
+function productNameExpr(itemAlias = 'jt'): string {
+    return `COALESCE(NULLIF(TRIM(${itemAlias}.product_name_raw), ''), 'Unknown Product')`;
+}
+
+function productKeyExpr(itemAlias = 'jt'): string {
+    return `LOWER(TRIM(CONCAT(COALESCE(NULLIF(${itemAlias}.brand_name, ''), 'unbranded'), '::', COALESCE(NULLIF(${itemAlias}.product_name_raw, ''), 'Unknown Product'))))`;
+}
+
+function categoryExpr(itemAlias = 'jt'): string {
+    return `COALESCE(NULLIF(TRIM(${itemAlias}.category_l1), ''), 'Uncategorized')`;
+}
+
+function quantityExpr(itemAlias = 'jt'): string {
+    return `COALESCE(${itemAlias}.quantity, 1)`;
+}
+
+function lineAmountExpr(itemAlias = 'jt'): string {
+    return `COALESCE(
+        ${itemAlias}.total_price,
+        CASE
+            WHEN ${itemAlias}.unit_price IS NOT NULL AND ${itemAlias}.quantity IS NOT NULL
+                THEN ${itemAlias}.unit_price * ${itemAlias}.quantity
+            ELSE 0
+        END,
+        0
+    )`;
+}
+
+function dimensionIdExpr(keyExpr: string): string {
+    return `CAST(CONV(SUBSTRING(SHA2(${keyExpr}, 256), 1, 12), 16, 10) AS UNSIGNED)`;
+}
+
+function companyIdExpr(billAlias = 'b'): string {
+    return dimensionIdExpr(companyKeyExpr(billAlias));
+}
+
+function brandIdExpr(itemAlias = 'jt'): string {
+    return dimensionIdExpr(brandKeyExpr(itemAlias));
+}
+
+function productIdExpr(itemAlias = 'jt'): string {
+    return dimensionIdExpr(productKeyExpr(itemAlias));
+}
+
+function itemScanIdExpr(billAlias = 'b', itemAlias = 'jt'): string {
+    return dimensionIdExpr(`CONCAT(${billAlias}.id, ':', ${itemAlias}.item_index)`);
+}
+
+function itemsTableExpr(billAlias = 'b', itemAlias = 'jt'): string {
+    return `JSON_TABLE(
+        COALESCE(JSON_EXTRACT(${billAlias}.extracted_data, '$.items'), JSON_ARRAY()),
+        '$[*]' COLUMNS (
+            item_index FOR ORDINALITY,
+            product_name_raw VARCHAR(255) PATH '$.name' NULL ON EMPTY,
+            brand_name VARCHAR(255) PATH '$.brand' NULL ON EMPTY,
+            category_l1 VARCHAR(100) PATH '$.category' NULL ON EMPTY,
+            quantity DECIMAL(10, 2) PATH '$.quantity' NULL ON EMPTY,
+            unit_price DECIMAL(10, 2) PATH '$.unit_price' NULL ON EMPTY,
+            total_price DECIMAL(10, 2) PATH '$.total_price' NULL ON EMPTY
+        )
+    ) ${itemAlias}`;
+}
+
+function itemsJoin(billAlias = 'b', itemAlias = 'jt'): string {
+    return `
+        INNER JOIN ${itemsTableExpr(billAlias, itemAlias)}
+    `;
+}
+
+function whereClause(conditions: string[]): string {
+    return conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+}
+
+function pushSharedBillConditions(
     filters: AnalyticsFilters,
-    params: (string | number)[],
-    options?: {
-        defaultStatuses?: BillStatus[];
-        searchColumns?: string[];
-        companyColumn?: string;
-        brandColumn?: string;
-        productColumn?: string;
-    }
-): string[] {
-    const conditions: string[] = [];
-
+    params: SqlParam[],
+    conditions: string[],
+    defaultStatuses?: BillStatus[]
+): void {
     if (filters.date_from) {
-        conditions.push(`${BILL_DATE_EXPR} >= ?`);
+        conditions.push(`${billDateExpr()} >= ?`);
         params.push(filters.date_from);
     }
     if (filters.date_to) {
-        conditions.push(`${BILL_DATE_EXPR} <= ?`);
+        conditions.push(`${billDateExpr()} <= ?`);
         params.push(filters.date_to);
     }
     if (filters.region) {
-        conditions.push(`b.region = ?`);
+        conditions.push(`${regionExpr()} = ?`);
         params.push(filters.region);
     }
     if (filters.state) {
-        conditions.push(`b.state = ?`);
+        conditions.push(`${stateExpr()} = ?`);
         params.push(filters.state);
     }
     if (filters.city) {
-        conditions.push(`b.city = ?`);
+        conditions.push(`${cityExpr()} = ?`);
         params.push(filters.city);
     }
     if (filters.area) {
-        conditions.push(`b.area = ?`);
+        conditions.push(`${areaExpr()} = ?`);
         params.push(filters.area);
-    }
-
-    if (filters.company_id && options?.companyColumn) {
-        conditions.push(`${options.companyColumn} = ?`);
-        params.push(filters.company_id);
-    }
-    if (filters.brand_id && options?.brandColumn) {
-        conditions.push(`${options.brandColumn} = ?`);
-        params.push(filters.brand_id);
-    }
-    if (filters.product_id && options?.productColumn) {
-        conditions.push(`${options.productColumn} = ?`);
-        params.push(filters.product_id);
     }
 
     const statuses = filters.statuses && filters.statuses.length > 0
         ? filters.statuses
-        : options?.defaultStatuses;
+        : defaultStatuses;
     if (statuses && statuses.length > 0) {
         conditions.push(`b.status IN (${statuses.map(() => '?').join(', ')})`);
         params.push(...statuses);
     }
+}
 
+function buildBillConditions(
+    filters: AnalyticsFilters,
+    params: SqlParam[],
+    options?: {
+        defaultStatuses?: BillStatus[];
+        includeDimensionFilters?: boolean;
+    }
+): string[] {
+    const conditions: string[] = [];
+    pushSharedBillConditions(filters, params, conditions, options?.defaultStatuses);
+
+    if (!options?.includeDimensionFilters) {
+        return conditions;
+    }
+
+    if (filters.company_id) {
+        conditions.push(`${companyIdExpr()} = ?`);
+        params.push(filters.company_id);
+    }
+    if (filters.brand_id) {
+        conditions.push(`
+            EXISTS (
+                SELECT 1
+                FROM ${itemsTableExpr('b', 'jt_filter')}
+                WHERE ${brandIdExpr('jt_filter')} = ?
+            )
+        `);
+        params.push(filters.brand_id);
+    }
+    if (filters.product_id) {
+        conditions.push(`
+            EXISTS (
+                SELECT 1
+                FROM ${itemsTableExpr('b', 'jt_filter')}
+                WHERE ${productIdExpr('jt_filter')} = ?
+            )
+        `);
+        params.push(filters.product_id);
+    }
+
+    return conditions;
+}
+
+function buildItemConditions(
+    filters: AnalyticsFilters,
+    params: SqlParam[],
+    options?: {
+        defaultStatuses?: BillStatus[];
+        searchColumns?: string[];
+    }
+): string[] {
+    const conditions: string[] = [];
+    pushSharedBillConditions(filters, params, conditions, options?.defaultStatuses);
+
+    if (filters.company_id) {
+        conditions.push(`${companyIdExpr()} = ?`);
+        params.push(filters.company_id);
+    }
+    if (filters.brand_id) {
+        conditions.push(`${brandIdExpr()} = ?`);
+        params.push(filters.brand_id);
+    }
+    if (filters.product_id) {
+        conditions.push(`${productIdExpr()} = ?`);
+        params.push(filters.product_id);
+    }
     if (filters.search && options?.searchColumns && options.searchColumns.length > 0) {
         const like = `%${filters.search}%`;
-        conditions.push(`(${options.searchColumns.map(column => `${column} LIKE ?`).join(' OR ')})`);
-        for (let i = 0; i < options.searchColumns.length; i++) {
+        conditions.push(`(${options.searchColumns.map((column) => `${column} LIKE ?`).join(' OR ')})`);
+        for (let index = 0; index < options.searchColumns.length; index++) {
             params.push(like);
         }
     }
@@ -123,194 +274,167 @@ function buildBillConditions(
     return conditions;
 }
 
-function normalizePagination(page: number, limit: number, total: number): PaginationMeta {
-    return calculatePagination(page, limit, total);
+function buildAnalyticsList<T>(
+    filters: AnalyticsFilters,
+    rows: T[],
+    pagination: PaginationMeta
+): AnalyticsListResponse<T> {
+    return {
+        filters: pickAnalyticsFilters(filters),
+        rows,
+        pagination,
+    };
 }
 
-class AdminAnalyticsRepositoryImpl {
+type CountRow = RowDataPacket & {
+    total: number | null;
+};
 
-    async upsertCompany(input: UpsertCompanyInput): Promise<Result<number | null, RequestError>> {
-        try {
-            const platformCode = slugify(input.platform ?? input.merchant_name ?? 'unknown') || 'unknown';
-            const companyName = formatCompanyName(input.platform, input.merchant_name);
-            const companyType = inferCompanyType(input.platform);
+type TotalSalesRow = RowDataPacket & {
+    total_sales_amount: number | null;
+};
 
-            await db.query(
-                `INSERT INTO ${ANALYTICS_COMPANY_TABLE} (platform_code, company_name, company_type)
-                 VALUES (?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                    company_name = VALUES(company_name),
-                    company_type = VALUES(company_type),
-                    updated_at = CURRENT_TIMESTAMP`,
-                [platformCode, companyName, companyType]
-            );
+type DashboardBillRow = RowDataPacket & {
+    total_bills_uploaded: number | null;
+    valid_bills_count: number | null;
+    invalid_bills_count: number | null;
+    pending_bills_count: number | null;
+};
 
-            const [rows] = await db.query<AnalyticsCompany[]>(
-                `SELECT id, platform_code, company_name, company_type, active_status
-                 FROM ${ANALYTICS_COMPANY_TABLE}
-                 WHERE platform_code = ?
-                 LIMIT 1`,
-                [platformCode]
-            );
+type DailyUploadRow = RowDataPacket & {
+    period_label: string;
+    uploads_count: number | null;
+    verified_count: number | null;
+    rejected_count: number | null;
+    pending_count: number | null;
+};
 
-            return ok(rows[0]?.id ?? null);
-        } catch (error) {
-            logger.error('Error upserting analytics company', error);
-            return err(ERRORS.DATABASE_ERROR);
-        }
-    }
+type CompanyDistributionDbRow = RowDataPacket & {
+    company_id: number | string | null;
+    company_name: string;
+    bill_count: number | null;
+    item_scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+};
 
-    async upsertBrand(brandName: string): Promise<Result<number | null, RequestError>> {
-        try {
-            await db.query(
-                `INSERT INTO ${ANALYTICS_BRAND_TABLE} (brand_name)
-                 VALUES (?)
-                 ON DUPLICATE KEY UPDATE brand_name = VALUES(brand_name), updated_at = CURRENT_TIMESTAMP`,
-                [brandName]
-            );
+type BrandDistributionDbRow = RowDataPacket & {
+    brand_id: number | string | null;
+    brand_name: string;
+    scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+    company_count: number | null;
+    product_count: number | null;
+};
 
-            const [rows] = await db.query<AnalyticsBrand[]>(
-                `SELECT id, brand_name
-                 FROM ${ANALYTICS_BRAND_TABLE}
-                 WHERE brand_name = ?
-                 LIMIT 1`,
-                [brandName]
-            );
+type ProductDistributionDbRow = RowDataPacket & {
+    product_id: number | string | null;
+    product_name: string;
+    brand_name: string | null;
+    category_l1: string | null;
+    scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+    company_count: number | null;
+};
 
-            return ok(rows[0]?.id ?? null);
-        } catch (error) {
-            logger.error('Error upserting analytics brand', error);
-            return err(ERRORS.DATABASE_ERROR);
-        }
-    }
+type CategoryInsightDbRow = RowDataPacket & {
+    category_l1: string;
+    scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+    product_count: number | null;
+    brand_count: number | null;
+};
 
-    async upsertProduct(input: UpsertProductInput): Promise<Result<number | null, RequestError>> {
-        try {
-            const productKey = slugify(`${input.brand_name ?? 'generic'}-${input.normalized_name}`);
-            const productName = input.normalized_name || input.raw_name;
+type SalesTrendDbRow = RowDataPacket & {
+    period: string;
+    actual_revenue: number | null;
+    bill_count: number | null;
+    item_scan_count: number | null;
+    active_users: number | null;
+};
 
-            await db.query(
-                `INSERT INTO ${ANALYTICS_PRODUCT_TABLE}
-                    (product_key, product_name, normalized_name, brand_id, category_l1, category_l2, unit_type, pack_size)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                    product_name = VALUES(product_name),
-                    normalized_name = VALUES(normalized_name),
-                    brand_id = VALUES(brand_id),
-                    category_l1 = VALUES(category_l1),
-                    category_l2 = VALUES(category_l2),
-                    unit_type = VALUES(unit_type),
-                    pack_size = VALUES(pack_size),
-                    updated_at = CURRENT_TIMESTAMP`,
-                [
-                    productKey,
-                    productName,
-                    input.normalized_name,
-                    input.brand_id,
-                    input.category_l1,
-                    input.category_l2,
-                    input.unit_type,
-                    input.pack_size,
-                ]
-            );
+type RealtimeBillRow = RowDataPacket & {
+    uploads_last_24h: number | null;
+    verified_last_24h: number | null;
+    active_users_last_7d: number | null;
+};
 
-            const [rows] = await db.query<AnalyticsProduct[]>(
-                `SELECT id, product_key, product_name, normalized_name, brand_id, category_l1, category_l2, unit_type, pack_size
-                 FROM ${ANALYTICS_PRODUCT_TABLE}
-                 WHERE product_key = ?
-                 LIMIT 1`,
-                [productKey]
-            );
+type RealtimeItemRow = RowDataPacket & {
+    sales_last_24h: number | null;
+};
 
-            return ok(rows[0]?.id ?? null);
-        } catch (error) {
-            logger.error('Error upserting analytics product', error);
-            return err(ERRORS.DATABASE_ERROR);
-        }
-    }
+type UserActivityDbRow = RowDataPacket & {
+    period: string;
+    active_users: number | null;
+    uploading_users: number | null;
+    avg_uploads_per_user: number | null;
+};
 
-    async updateBillAnalyticsSnapshot(
-        billId: number,
-        snapshot: BillAnalyticsSnapshot
-    ): Promise<Result<void, RequestError>> {
-        try {
-            await db.query(
-                `UPDATE bills
-                 SET company_id = ?, merchant_name = ?, region = ?, state = ?, city = ?, area = ?, postal_code = ?
-                 WHERE id = ?`,
-                [
-                    snapshot.company_id,
-                    snapshot.merchant_name,
-                    snapshot.region,
-                    snapshot.state,
-                    snapshot.city,
-                    snapshot.area,
-                    snapshot.postal_code,
-                    billId,
-                ]
-            );
-            return ok(undefined);
-        } catch (error) {
-            logger.error('Error updating bill analytics snapshot', error);
-            return err(ERRORS.DATABASE_ERROR);
-        }
-    }
+type GeographyDistributionDbRow = RowDataPacket & {
+    geography_label: string;
+    bill_count: number | null;
+    item_scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+    company_count: number | null;
+    brand_count: number | null;
+    product_count: number | null;
+};
 
-    async replaceBillItems(
-        billId: number,
-        items: SyncedBillItem[]
-    ): Promise<Result<void, RequestError>> {
-        const connection = await db.getConnection();
-        try {
-            await connection.beginTransaction();
-            await connection.query(`DELETE FROM ${BILL_ITEMS_TABLE} WHERE bill_id = ?`, [billId]);
+type ItemScanDbRow = RowDataPacket & {
+    bill_item_id: number | string;
+    bill_id: number;
+    user_id: number;
+    company_id: number | string | null;
+    company_name: string;
+    brand_id: number | string | null;
+    brand_name: string | null;
+    product_id: number | string | null;
+    product_name: string | null;
+    product_name_raw: string;
+    category_l1: string | null;
+    quantity: number | null;
+    unit_price: number | null;
+    line_amount: number | null;
+    city: string | null;
+    area: string | null;
+    bill_date: string | null;
+    bill_status: BillStatus;
+};
 
-            for (const item of items) {
-                await connection.query(
-                    `INSERT INTO ${BILL_ITEMS_TABLE}
-                        (bill_id, company_id, brand_id, product_id, product_name_raw, product_name_normalized,
-                         category_l1, category_l2, quantity, unit_type, unit_price, line_amount,
-                         currency_code, city, area, bill_date)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                    [
-                        billId,
-                        item.company_id,
-                        item.brand_id,
-                        item.product_id,
-                        item.product_name_raw,
-                        item.product_name_normalized,
-                        item.category_l1,
-                        item.category_l2,
-                        item.quantity,
-                        item.unit_type,
-                        item.unit_price,
-                        item.line_amount,
-                        item.currency_code,
-                        item.city,
-                        item.area,
-                        item.bill_date,
-                    ]
-                );
-            }
+type DrilldownDbRow = RowDataPacket & {
+    id: number | string | null;
+    name: string;
+    bill_count: number | null;
+    scan_count: number | null;
+    total_quantity: number | null;
+    total_sales_amount: number | null;
+};
 
-            await connection.commit();
-            return ok(undefined);
-        } catch (error) {
-            await connection.rollback();
-            logger.error('Error replacing analytics bill items', error);
-            return err(ERRORS.DATABASE_ERROR);
-        } finally {
-            connection.release();
-        }
-    }
+export interface IAdminAnalyticsRepository {
+    getDashboard(filters: AnalyticsFilters): Promise<Result<AdminAnalyticsDashboardView, RequestError>>;
+    getCompanyDistribution(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<CompanyDistributionRow>, RequestError>>;
+    getBrandDistribution(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<BrandDistributionRow>, RequestError>>;
+    getProductDistribution(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<ProductDistributionRow>, RequestError>>;
+    getGeographyDistribution(filters: GeographyDistributionFilters): Promise<Result<AnalyticsListResponse<GeographyDistributionRow>, RequestError>>;
+    getItemScans(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<ItemScanRow>, RequestError>>;
+    getCompanyProducts(companyId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
+    getBrandProducts(brandId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
+    getProductCompanies(productId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
+}
 
+class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
     async getDashboard(filters: AnalyticsFilters): Promise<Result<AdminAnalyticsDashboardView, RequestError>> {
         try {
-            const billParams: (string | number)[] = [];
-            const billConditions = buildBillConditions(filters, billParams);
-            const billWhere = billConditions.length > 0 ? `WHERE ${billConditions.join(' AND ')}` : '';
+            const billParams: SqlParam[] = [];
+            const billWhere = whereClause(
+                buildBillConditions(filters, billParams, { includeDimensionFilters: true })
+            );
 
-            const [billRows] = await db.query<any[]>(
+            const [billRows] = await db.query<DashboardBillRow[]>(
                 `SELECT
                     COUNT(*) AS total_bills_uploaded,
                     SUM(CASE WHEN b.status = 'verified' THEN 1 ELSE 0 END) AS valid_bills_count,
@@ -320,12 +444,8 @@ class AdminAnalyticsRepositoryImpl {
                  ${billWhere}`,
                 billParams
             );
-            const billSummary = billRows[0] ?? {};
-            const totalBills = toNumber(billSummary.total_bills_uploaded);
-            const validBills = toNumber(billSummary.valid_bills_count);
-            const invalidBills = toNumber(billSummary.invalid_bills_count);
 
-            const [dailyRows] = await db.query<any[]>(
+            const [dailyRows] = await db.query<DailyUploadRow[]>(
                 `SELECT
                     DATE_FORMAT(DATE(b.created_at), '%Y-%m-%d') AS period_label,
                     COUNT(*) AS uploads_count,
@@ -340,102 +460,98 @@ class AdminAnalyticsRepositoryImpl {
                 billParams
             );
 
-            const companyPurchaseResult = await this.getCompanyDistribution({
+            const companyDistributionResult = await this.getCompanyDistribution({
                 ...filters,
                 page: 1,
                 limit: 10,
             });
-            if (companyPurchaseResult.isErr()) return err(companyPurchaseResult.error);
+            if (companyDistributionResult.isErr()) return err(companyDistributionResult.error);
 
-            const brandResult = await this.getBrandDistribution({
+            const brandDistributionResult = await this.getBrandDistribution({
                 ...filters,
                 page: 1,
                 limit: 10,
             });
-            if (brandResult.isErr()) return err(brandResult.error);
+            if (brandDistributionResult.isErr()) return err(brandDistributionResult.error);
 
-            const productResult = await this.getProductDistribution({
+            const productDistributionResult = await this.getProductDistribution({
                 ...filters,
                 page: 1,
                 limit: 10,
             });
-            if (productResult.isErr()) return err(productResult.error);
+            if (productDistributionResult.isErr()) return err(productDistributionResult.error);
 
-            const categoryParams: (string | number)[] = [];
-            const categoryConditions = buildBillConditions(
-                filters,
-                categoryParams,
-                {
+            const itemParams: SqlParam[] = [];
+            const itemWhere = whereClause(
+                buildItemConditions(filters, itemParams, {
                     defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                }
+                })
             );
-            const categoryWhere = categoryConditions.length > 0 ? `WHERE ${categoryConditions.join(' AND ')}` : '';
 
-            const [categoryRows] = await db.query<any[]>(
+            const [categoryRows] = await db.query<CategoryInsightDbRow[]>(
                 `SELECT
-                    COALESCE(NULLIF(bi.category_l1, ''), 'Uncategorized') AS category_l1,
+                    ${categoryExpr()} AS category_l1,
                     COUNT(*) AS scan_count,
-                    COALESCE(SUM(COALESCE(bi.quantity, 1)), 0) AS total_quantity,
-                    COALESCE(SUM(bi.line_amount), 0) AS total_sales_amount,
-                    COUNT(DISTINCT bi.product_id) AS product_count,
-                    COUNT(DISTINCT bi.brand_id) AS brand_count
-                 FROM ${BILL_ITEMS_TABLE} bi
-                 INNER JOIN bills b ON b.id = bi.bill_id
-                 ${categoryWhere}
-                 GROUP BY COALESCE(NULLIF(bi.category_l1, ''), 'Uncategorized')
+                    COALESCE(SUM(${quantityExpr()}), 0) AS total_quantity,
+                    COALESCE(SUM(${lineAmountExpr()}), 0) AS total_sales_amount,
+                    COUNT(DISTINCT ${productIdExpr()}) AS product_count,
+                    COUNT(DISTINCT ${brandIdExpr()}) AS brand_count
+                 FROM bills b
+                 ${itemsJoin()}
+                 ${itemWhere}
+                 GROUP BY ${categoryExpr()}
                  ORDER BY total_sales_amount DESC
                  LIMIT 10`,
-                categoryParams
+                itemParams
             );
 
-            const [trendRows] = await db.query<any[]>(
+            const [trendRows] = await db.query<SalesTrendDbRow[]>(
                 `SELECT
-                    DATE_FORMAT(${BILL_DATE_EXPR}, '%Y-%m-%d') AS period,
-                    COALESCE(SUM(bi.line_amount), 0) AS actual_revenue,
+                    DATE_FORMAT(${billDateExpr()}, '%Y-%m-%d') AS period,
+                    COALESCE(SUM(${lineAmountExpr()}), 0) AS actual_revenue,
                     COUNT(DISTINCT b.id) AS bill_count,
                     COUNT(*) AS item_scan_count,
                     COUNT(DISTINCT b.user_id) AS active_users
-                 FROM ${BILL_ITEMS_TABLE} bi
-                 INNER JOIN bills b ON b.id = bi.bill_id
-                 ${categoryWhere}
-                 GROUP BY DATE_FORMAT(${BILL_DATE_EXPR}, '%Y-%m-%d')
+                 FROM bills b
+                 ${itemsJoin()}
+                 ${itemWhere}
+                 GROUP BY DATE_FORMAT(${billDateExpr()}, '%Y-%m-%d')
                  ORDER BY period ASC
                  LIMIT 30`,
-                categoryParams
+                itemParams
             );
 
-            const realtimeBillParams: (string | number)[] = [];
-            const realtimeConditions = buildBillConditions(filters, realtimeBillParams);
-            const realtimeWhere = realtimeConditions.length > 0 ? `WHERE ${realtimeConditions.join(' AND ')}` : '';
+            const realtimeBillParams: SqlParam[] = [];
+            const realtimeBillWhere = whereClause(
+                buildBillConditions(filters, realtimeBillParams, { includeDimensionFilters: true })
+            );
 
-            const [realtimeBillRows] = await db.query<any[]>(
+            const [realtimeBillRows] = await db.query<RealtimeBillRow[]>(
                 `SELECT
                     SUM(CASE WHEN b.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 ELSE 0 END) AS uploads_last_24h,
                     SUM(CASE WHEN b.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) AND b.status = 'verified' THEN 1 ELSE 0 END) AS verified_last_24h,
                     COUNT(DISTINCT CASE WHEN b.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN b.user_id END) AS active_users_last_7d
                  FROM bills b
-                 ${realtimeWhere}`,
+                 ${realtimeBillWhere}`,
                 realtimeBillParams
             );
 
-            const realtimeItemParams: (string | number)[] = [];
-            const realtimeItemConditions = buildBillConditions(
-                filters,
-                realtimeItemParams,
-                { defaultStatuses: DEFAULT_ANALYTICS_STATUSES }
-            );
+            const realtimeItemParams: SqlParam[] = [];
+            const realtimeItemConditions = buildItemConditions(filters, realtimeItemParams, {
+                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
+            });
             realtimeItemConditions.push(`b.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)`);
-            const realtimeItemWhere = `WHERE ${realtimeItemConditions.join(' AND ')}`;
+            const realtimeItemWhere = whereClause(realtimeItemConditions);
 
-            const [realtimeItemRows] = await db.query<any[]>(
-                `SELECT COALESCE(SUM(bi.line_amount), 0) AS sales_last_24h
-                 FROM ${BILL_ITEMS_TABLE} bi
-                 INNER JOIN bills b ON b.id = bi.bill_id
+            const [realtimeItemRows] = await db.query<RealtimeItemRow[]>(
+                `SELECT COALESCE(SUM(${lineAmountExpr()}), 0) AS sales_last_24h
+                 FROM bills b
+                 ${itemsJoin()}
                  ${realtimeItemWhere}`,
                 realtimeItemParams
             );
 
-            const [userActivityRows] = await db.query<any[]>(
+            const [userActivityRows] = await db.query<UserActivityDbRow[]>(
                 `SELECT
                     DATE_FORMAT(DATE(b.created_at), '%Y-%m-%d') AS period,
                     COUNT(DISTINCT b.user_id) AS active_users,
@@ -449,7 +565,19 @@ class AdminAnalyticsRepositoryImpl {
                 billParams
             );
 
-            const response: AdminAnalyticsDashboardView = {
+            const billSummary = billRows[0] ?? ({} as DashboardBillRow);
+            const totalBills = toNumber(billSummary.total_bills_uploaded);
+            const validBills = toNumber(billSummary.valid_bills_count);
+            const invalidBills = toNumber(billSummary.invalid_bills_count);
+            const salesTrendPoints = trendRows.map<SalesTrendPoint>((row) => ({
+                period: row.period,
+                actual_revenue: toNumber(row.actual_revenue),
+                bill_count: toNumber(row.bill_count),
+                item_scan_count: toNumber(row.item_scan_count),
+                active_users: toNumber(row.active_users),
+            }));
+
+            return ok({
                 filters: pickAnalyticsFilters(filters),
                 bill_analytics: {
                     total_bills_uploaded: totalBills,
@@ -467,18 +595,12 @@ class AdminAnalyticsRepositoryImpl {
                     })),
                 },
                 brand_analytics: {
-                    company_purchase_analysis: companyPurchaseResult.value.rows,
-                    top_performing_brands: brandResult.value.rows,
-                    sales_trends: trendRows.map<SalesTrendPoint>((row) => ({
-                        period: row.period,
-                        actual_revenue: toNumber(row.actual_revenue),
-                        bill_count: toNumber(row.bill_count),
-                        item_scan_count: toNumber(row.item_scan_count),
-                        active_users: toNumber(row.active_users),
-                    })),
+                    company_purchase_analysis: companyDistributionResult.value.rows,
+                    top_performing_brands: brandDistributionResult.value.rows,
+                    sales_trends: salesTrendPoints,
                 },
                 product_analytics: {
-                    product_frequency_analysis: productResult.value.rows,
+                    product_frequency_analysis: productDistributionResult.value.rows,
                     category_wise_insights: categoryRows.map<CategoryInsightRow>((row) => ({
                         category_l1: row.category_l1,
                         scan_count: toNumber(row.scan_count),
@@ -495,13 +617,7 @@ class AdminAnalyticsRepositoryImpl {
                         sales_last_24h: toNumber(realtimeItemRows[0]?.sales_last_24h),
                         active_users_last_7d: toNumber(realtimeBillRows[0]?.active_users_last_7d),
                     },
-                    sales_trends: trendRows.map<SalesTrendPoint>((row) => ({
-                        period: row.period,
-                        actual_revenue: toNumber(row.actual_revenue),
-                        bill_count: toNumber(row.bill_count),
-                        item_scan_count: toNumber(row.item_scan_count),
-                        active_users: toNumber(row.active_users),
-                    })),
+                    sales_trends: salesTrendPoints,
                     user_activity_graphs: userActivityRows.map<UserActivityPoint>((row) => ({
                         period: row.period,
                         active_users: toNumber(row.active_users),
@@ -509,65 +625,44 @@ class AdminAnalyticsRepositoryImpl {
                         avg_uploads_per_user: toNumber(row.avg_uploads_per_user),
                     })),
                 },
-            };
-
-            return ok(response);
+            });
         } catch (error) {
-            logger.error('Error building admin analytics dashboard', error);
+            logger.error('Error fetching admin analytics dashboard', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }
 
     async getCompanyDistribution(
         filters: AnalyticsFilters
-    ): Promise<Result<QueryPagination<CompanyDistributionRow>, RequestError>> {
+    ): Promise<Result<AnalyticsListResponse<CompanyDistributionRow>, RequestError>> {
         try {
-            const params: (string | number)[] = [];
-            const conditions = buildBillConditions(
-                filters,
-                params,
-                {
-                    defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                    searchColumns: ['c.company_name', 'b.merchant_name'],
-                    companyColumn: 'bi.company_id',
-                }
-            );
-            const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-            const offset = (filters.page - 1) * filters.limit;
-
+            const params: SqlParam[] = [];
+            const conditions = buildItemConditions(filters, params, {
+                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
+                searchColumns: ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()],
+            });
             const baseQuery = `
                 SELECT
-                    bi.company_id AS company_id,
-                    COALESCE(c.company_name, b.merchant_name, 'Unknown') AS company_name,
-                    COUNT(DISTINCT bi.bill_id) AS bill_count,
+                    ${companyIdExpr()} AS company_id,
+                    ${companyNameExpr()} AS company_name,
+                    COUNT(DISTINCT b.id) AS bill_count,
                     COUNT(*) AS item_scan_count,
-                    COALESCE(SUM(COALESCE(bi.quantity, 1)), 0) AS total_quantity,
-                    COALESCE(SUM(bi.line_amount), 0) AS total_sales_amount
-                FROM ${BILL_ITEMS_TABLE} bi
-                INNER JOIN bills b ON b.id = bi.bill_id
-                LEFT JOIN ${ANALYTICS_COMPANY_TABLE} c ON c.id = bi.company_id
-                ${where}
-                GROUP BY bi.company_id, COALESCE(c.company_name, b.merchant_name, 'Unknown')
+                    COALESCE(SUM(${quantityExpr()}), 0) AS total_quantity,
+                    COALESCE(SUM(${lineAmountExpr()}), 0) AS total_sales_amount
+                FROM bills b
+                ${itemsJoin()}
+                ${whereClause(conditions)}
+                GROUP BY ${companyIdExpr()}, ${companyNameExpr()}
             `;
 
-            const [rows] = await db.query<any[]>(
-                `${baseQuery}
-                 ORDER BY total_sales_amount DESC, item_scan_count DESC
-                 LIMIT ? OFFSET ?`,
-                [...params, filters.limit, offset]
-            );
+            const rows = await this.runPagedQuery<CompanyDistributionDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, item_scan_count DESC');
+            const total = await this.countGroupedRows(baseQuery, params);
+            const totalSales = await this.sumGroupedSales(baseQuery, params);
 
-            const [countRows] = await db.query<any[]>(
-                `SELECT COUNT(*) AS total FROM (${baseQuery}) company_groups`,
-                params
-            );
-            const total = toNumber(countRows[0]?.total);
-            const totalSales = rows.reduce((sum, row) => sum + toNumber(row.total_sales_amount), 0);
-
-            return ok({
-                filters: pickAnalyticsFilters(filters),
-                rows: rows.map<CompanyDistributionRow>((row) => ({
-                    company_id: row.company_id ? Number(row.company_id) : null,
+            return ok(buildAnalyticsList(
+                filters,
+                rows.map<CompanyDistributionRow>((row) => ({
+                    company_id: row.company_id !== null ? Number(row.company_id) : null,
                     company_name: row.company_name,
                     bill_count: toNumber(row.bill_count),
                     item_scan_count: toNumber(row.item_scan_count),
@@ -575,8 +670,8 @@ class AdminAnalyticsRepositoryImpl {
                     total_sales_amount: toNumber(row.total_sales_amount),
                     share_pct: percentage(toNumber(row.total_sales_amount), totalSales),
                 })),
-                pagination: normalizePagination(filters.page, filters.limit, total),
-            });
+                calculatePagination(filters.page, filters.limit, total)
+            ));
         } catch (error) {
             logger.error('Error fetching company distribution', error);
             return err(ERRORS.DATABASE_ERROR);
@@ -585,56 +680,36 @@ class AdminAnalyticsRepositoryImpl {
 
     async getBrandDistribution(
         filters: AnalyticsFilters
-    ): Promise<Result<QueryPagination<BrandDistributionRow>, RequestError>> {
+    ): Promise<Result<AnalyticsListResponse<BrandDistributionRow>, RequestError>> {
         try {
-            const params: (string | number)[] = [];
-            const conditions = buildBillConditions(
-                filters,
-                params,
-                {
-                    defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                    searchColumns: ['br.brand_name', 'p.product_name'],
-                    companyColumn: 'bi.company_id',
-                    brandColumn: 'bi.brand_id',
-                }
-            );
-            const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-            const offset = (filters.page - 1) * filters.limit;
-
+            const params: SqlParam[] = [];
+            const conditions = buildItemConditions(filters, params, {
+                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
+                searchColumns: ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()],
+            });
             const baseQuery = `
                 SELECT
-                    bi.brand_id AS brand_id,
-                    COALESCE(br.brand_name, 'Unbranded') AS brand_name,
+                    ${brandIdExpr()} AS brand_id,
+                    ${brandNameExpr()} AS brand_name,
                     COUNT(*) AS scan_count,
-                    COALESCE(SUM(COALESCE(bi.quantity, 1)), 0) AS total_quantity,
-                    COALESCE(SUM(bi.line_amount), 0) AS total_sales_amount,
-                    COUNT(DISTINCT bi.company_id) AS company_count,
-                    COUNT(DISTINCT bi.product_id) AS product_count
-                FROM ${BILL_ITEMS_TABLE} bi
-                INNER JOIN bills b ON b.id = bi.bill_id
-                LEFT JOIN ${ANALYTICS_BRAND_TABLE} br ON br.id = bi.brand_id
-                LEFT JOIN ${ANALYTICS_PRODUCT_TABLE} p ON p.id = bi.product_id
-                ${where}
-                GROUP BY bi.brand_id, COALESCE(br.brand_name, 'Unbranded')
+                    COALESCE(SUM(${quantityExpr()}), 0) AS total_quantity,
+                    COALESCE(SUM(${lineAmountExpr()}), 0) AS total_sales_amount,
+                    COUNT(DISTINCT ${companyIdExpr()}) AS company_count,
+                    COUNT(DISTINCT ${productIdExpr()}) AS product_count
+                FROM bills b
+                ${itemsJoin()}
+                ${whereClause(conditions)}
+                GROUP BY ${brandIdExpr()}, ${brandNameExpr()}
             `;
 
-            const [rows] = await db.query<any[]>(
-                `${baseQuery}
-                 ORDER BY total_sales_amount DESC, scan_count DESC
-                 LIMIT ? OFFSET ?`,
-                [...params, filters.limit, offset]
-            );
-            const [countRows] = await db.query<any[]>(
-                `SELECT COUNT(*) AS total FROM (${baseQuery}) brand_groups`,
-                params
-            );
-            const total = toNumber(countRows[0]?.total);
-            const totalSales = rows.reduce((sum, row) => sum + toNumber(row.total_sales_amount), 0);
+            const rows = await this.runPagedQuery<BrandDistributionDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, scan_count DESC');
+            const total = await this.countGroupedRows(baseQuery, params);
+            const totalSales = await this.sumGroupedSales(baseQuery, params);
 
-            return ok({
-                filters: pickAnalyticsFilters(filters),
-                rows: rows.map<BrandDistributionRow>((row) => ({
-                    brand_id: row.brand_id ? Number(row.brand_id) : null,
+            return ok(buildAnalyticsList(
+                filters,
+                rows.map<BrandDistributionRow>((row) => ({
+                    brand_id: row.brand_id !== null ? Number(row.brand_id) : null,
                     brand_name: row.brand_name,
                     scan_count: toNumber(row.scan_count),
                     total_quantity: toNumber(row.total_quantity),
@@ -643,8 +718,8 @@ class AdminAnalyticsRepositoryImpl {
                     product_count: toNumber(row.product_count),
                     share_pct: percentage(toNumber(row.total_sales_amount), totalSales),
                 })),
-                pagination: normalizePagination(filters.page, filters.limit, total),
-            });
+                calculatePagination(filters.page, filters.limit, total)
+            ));
         } catch (error) {
             logger.error('Error fetching brand distribution', error);
             return err(ERRORS.DATABASE_ERROR);
@@ -653,57 +728,36 @@ class AdminAnalyticsRepositoryImpl {
 
     async getProductDistribution(
         filters: AnalyticsFilters
-    ): Promise<Result<QueryPagination<ProductDistributionRow>, RequestError>> {
+    ): Promise<Result<AnalyticsListResponse<ProductDistributionRow>, RequestError>> {
         try {
-            const params: (string | number)[] = [];
-            const conditions = buildBillConditions(
-                filters,
-                params,
-                {
-                    defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                    searchColumns: ['p.product_name', 'bi.product_name_raw', 'br.brand_name'],
-                    companyColumn: 'bi.company_id',
-                    brandColumn: 'bi.brand_id',
-                    productColumn: 'bi.product_id',
-                }
-            );
-            const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-            const offset = (filters.page - 1) * filters.limit;
-
+            const params: SqlParam[] = [];
+            const conditions = buildItemConditions(filters, params, {
+                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
+                searchColumns: ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()],
+            });
             const baseQuery = `
                 SELECT
-                    bi.product_id AS product_id,
-                    COALESCE(p.product_name, bi.product_name_normalized, bi.product_name_raw) AS product_name,
-                    br.brand_name AS brand_name,
-                    COALESCE(bi.category_l1, p.category_l1) AS category_l1,
+                    ${productIdExpr()} AS product_id,
+                    ${productNameExpr()} AS product_name,
+                    ${brandNameExpr()} AS brand_name,
+                    ${categoryExpr()} AS category_l1,
                     COUNT(*) AS scan_count,
-                    COALESCE(SUM(COALESCE(bi.quantity, 1)), 0) AS total_quantity,
-                    COALESCE(SUM(bi.line_amount), 0) AS total_sales_amount,
-                    COUNT(DISTINCT bi.company_id) AS company_count
-                FROM ${BILL_ITEMS_TABLE} bi
-                INNER JOIN bills b ON b.id = bi.bill_id
-                LEFT JOIN ${ANALYTICS_PRODUCT_TABLE} p ON p.id = bi.product_id
-                LEFT JOIN ${ANALYTICS_BRAND_TABLE} br ON br.id = bi.brand_id
-                ${where}
-                GROUP BY bi.product_id, COALESCE(p.product_name, bi.product_name_normalized, bi.product_name_raw), br.brand_name, COALESCE(bi.category_l1, p.category_l1)
+                    COALESCE(SUM(${quantityExpr()}), 0) AS total_quantity,
+                    COALESCE(SUM(${lineAmountExpr()}), 0) AS total_sales_amount,
+                    COUNT(DISTINCT ${companyIdExpr()}) AS company_count
+                FROM bills b
+                ${itemsJoin()}
+                ${whereClause(conditions)}
+                GROUP BY ${productIdExpr()}, ${productNameExpr()}, ${brandNameExpr()}, ${categoryExpr()}
             `;
 
-            const [rows] = await db.query<any[]>(
-                `${baseQuery}
-                 ORDER BY scan_count DESC, total_sales_amount DESC
-                 LIMIT ? OFFSET ?`,
-                [...params, filters.limit, offset]
-            );
-            const [countRows] = await db.query<any[]>(
-                `SELECT COUNT(*) AS total FROM (${baseQuery}) product_groups`,
-                params
-            );
-            const total = toNumber(countRows[0]?.total);
+            const rows = await this.runPagedQuery<ProductDistributionDbRow>(baseQuery, params, filters, 'ORDER BY scan_count DESC, total_sales_amount DESC');
+            const total = await this.countGroupedRows(baseQuery, params);
 
-            return ok({
-                filters: pickAnalyticsFilters(filters),
-                rows: rows.map<ProductDistributionRow>((row) => ({
-                    product_id: row.product_id ? Number(row.product_id) : null,
+            return ok(buildAnalyticsList(
+                filters,
+                rows.map<ProductDistributionRow>((row) => ({
+                    product_id: row.product_id !== null ? Number(row.product_id) : null,
                     product_name: row.product_name,
                     brand_name: row.brand_name ?? null,
                     category_l1: row.category_l1 ?? null,
@@ -712,8 +766,8 @@ class AdminAnalyticsRepositoryImpl {
                     total_sales_amount: toNumber(row.total_sales_amount),
                     company_count: toNumber(row.company_count),
                 })),
-                pagination: normalizePagination(filters.page, filters.limit, total),
-            });
+                calculatePagination(filters.page, filters.limit, total)
+            ));
         } catch (error) {
             logger.error('Error fetching product distribution', error);
             return err(ERRORS.DATABASE_ERROR);
@@ -722,61 +776,42 @@ class AdminAnalyticsRepositoryImpl {
 
     async getGeographyDistribution(
         filters: GeographyDistributionFilters
-    ): Promise<Result<QueryPagination<GeographyDistributionRow>, RequestError>> {
+    ): Promise<Result<AnalyticsListResponse<GeographyDistributionRow>, RequestError>> {
         try {
-            const columnMap: Record<GeographyDistributionFilters['group_by'], string> = {
-                region: `COALESCE(b.region, 'Unknown')`,
-                state: `COALESCE(b.state, 'Unknown')`,
-                city: `COALESCE(b.city, 'Unknown')`,
-                area: `COALESCE(b.area, 'Unknown')`,
+            const geographyMap: Record<GeographyDistributionFilters['group_by'], string> = {
+                region: regionExpr(),
+                state: `COALESCE(${stateExpr()}, 'Unknown')`,
+                city: `COALESCE(${cityExpr()}, 'Unknown')`,
+                area: `COALESCE(${areaExpr()}, 'Unknown')`,
             };
-            const geographyExpr = columnMap[filters.group_by];
+            const geographyLabelExpr = geographyMap[filters.group_by];
 
-            const params: (string | number)[] = [];
-            const conditions = buildBillConditions(
-                filters,
-                params,
-                {
-                    defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                    companyColumn: 'bi.company_id',
-                    brandColumn: 'bi.brand_id',
-                    productColumn: 'bi.product_id',
-                }
-            );
-            const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-            const offset = (filters.page - 1) * filters.limit;
-
+            const params: SqlParam[] = [];
+            const conditions = buildItemConditions(filters, params, {
+                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
+            });
             const baseQuery = `
                 SELECT
-                    ${geographyExpr} AS geography_label,
-                    COUNT(DISTINCT bi.bill_id) AS bill_count,
+                    ${geographyLabelExpr} AS geography_label,
+                    COUNT(DISTINCT b.id) AS bill_count,
                     COUNT(*) AS item_scan_count,
-                    COALESCE(SUM(COALESCE(bi.quantity, 1)), 0) AS total_quantity,
-                    COALESCE(SUM(bi.line_amount), 0) AS total_sales_amount,
-                    COUNT(DISTINCT bi.company_id) AS company_count,
-                    COUNT(DISTINCT bi.brand_id) AS brand_count,
-                    COUNT(DISTINCT bi.product_id) AS product_count
-                FROM ${BILL_ITEMS_TABLE} bi
-                INNER JOIN bills b ON b.id = bi.bill_id
-                ${where}
-                GROUP BY ${geographyExpr}
+                    COALESCE(SUM(${quantityExpr()}), 0) AS total_quantity,
+                    COALESCE(SUM(${lineAmountExpr()}), 0) AS total_sales_amount,
+                    COUNT(DISTINCT ${companyIdExpr()}) AS company_count,
+                    COUNT(DISTINCT ${brandIdExpr()}) AS brand_count,
+                    COUNT(DISTINCT ${productIdExpr()}) AS product_count
+                FROM bills b
+                ${itemsJoin()}
+                ${whereClause(conditions)}
+                GROUP BY ${geographyLabelExpr}
             `;
 
-            const [rows] = await db.query<any[]>(
-                `${baseQuery}
-                 ORDER BY total_sales_amount DESC, item_scan_count DESC
-                 LIMIT ? OFFSET ?`,
-                [...params, filters.limit, offset]
-            );
-            const [countRows] = await db.query<any[]>(
-                `SELECT COUNT(*) AS total FROM (${baseQuery}) geography_groups`,
-                params
-            );
-            const total = toNumber(countRows[0]?.total);
+            const rows = await this.runPagedQuery<GeographyDistributionDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, item_scan_count DESC');
+            const total = await this.countGroupedRows(baseQuery, params);
 
-            return ok({
-                filters: pickAnalyticsFilters(filters),
-                rows: rows.map<GeographyDistributionRow>((row) => ({
+            return ok(buildAnalyticsList(
+                filters,
+                rows.map<GeographyDistributionRow>((row) => ({
                     geography_label: row.geography_label,
                     bill_count: toNumber(row.bill_count),
                     item_scan_count: toNumber(row.item_scan_count),
@@ -786,8 +821,8 @@ class AdminAnalyticsRepositoryImpl {
                     brand_count: toNumber(row.brand_count),
                     product_count: toNumber(row.product_count),
                 })),
-                pagination: normalizePagination(filters.page, filters.limit, total),
-            });
+                calculatePagination(filters.page, filters.limit, total)
+            ));
         } catch (error) {
             logger.error('Error fetching geography distribution', error);
             return err(ERRORS.DATABASE_ERROR);
@@ -796,77 +831,57 @@ class AdminAnalyticsRepositoryImpl {
 
     async getItemScans(
         filters: AnalyticsFilters
-    ): Promise<Result<QueryPagination<ItemScanRow>, RequestError>> {
+    ): Promise<Result<AnalyticsListResponse<ItemScanRow>, RequestError>> {
         try {
-            const params: (string | number)[] = [];
-            const conditions = buildBillConditions(
-                filters,
-                params,
-                {
-                    defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                    searchColumns: ['p.product_name', 'bi.product_name_raw', 'br.brand_name', 'c.company_name', 'CAST(b.id AS CHAR)'],
-                    companyColumn: 'bi.company_id',
-                    brandColumn: 'bi.brand_id',
-                    productColumn: 'bi.product_id',
-                }
-            );
-            const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-            const offset = (filters.page - 1) * filters.limit;
-
-            const [rows] = await db.query<any[]>(
-                `SELECT
-                    bi.id AS bill_item_id,
-                    bi.bill_id AS bill_id,
+            const params: SqlParam[] = [];
+            const conditions = buildItemConditions(filters, params, {
+                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
+                searchColumns: ['CAST(b.id AS CHAR)', companyNameExpr(), brandNameExpr(), productNameExpr()],
+            });
+            const baseQuery = `
+                SELECT
+                    ${itemScanIdExpr()} AS bill_item_id,
+                    b.id AS bill_id,
                     b.user_id AS user_id,
-                    bi.company_id AS company_id,
-                    COALESCE(c.company_name, b.merchant_name, 'Unknown') AS company_name,
-                    bi.brand_id AS brand_id,
-                    br.brand_name AS brand_name,
-                    bi.product_id AS product_id,
-                    COALESCE(p.product_name, bi.product_name_normalized, bi.product_name_raw) AS product_name,
-                    bi.product_name_raw AS product_name_raw,
-                    bi.category_l1 AS category_l1,
-                    bi.quantity AS quantity,
-                    bi.unit_price AS unit_price,
-                    bi.line_amount AS line_amount,
-                    COALESCE(b.city, bi.city) AS city,
-                    COALESCE(b.area, bi.area) AS area,
-                    DATE_FORMAT(COALESCE(bi.bill_date, ${BILL_DATE_EXPR}), '%Y-%m-%d') AS bill_date,
+                    ${companyIdExpr()} AS company_id,
+                    ${companyNameExpr()} AS company_name,
+                    ${brandIdExpr()} AS brand_id,
+                    ${brandNameExpr()} AS brand_name,
+                    ${productIdExpr()} AS product_id,
+                    ${productNameExpr()} AS product_name,
+                    ${productNameExpr()} AS product_name_raw,
+                    ${categoryExpr()} AS category_l1,
+                    jt.quantity AS quantity,
+                    jt.unit_price AS unit_price,
+                    ${lineAmountExpr()} AS line_amount,
+                    ${cityExpr()} AS city,
+                    ${areaExpr()} AS area,
+                    DATE_FORMAT(${billDateExpr()}, '%Y-%m-%d') AS bill_date,
                     b.status AS bill_status
-                 FROM ${BILL_ITEMS_TABLE} bi
-                 INNER JOIN bills b ON b.id = bi.bill_id
-                 LEFT JOIN ${ANALYTICS_COMPANY_TABLE} c ON c.id = bi.company_id
-                 LEFT JOIN ${ANALYTICS_BRAND_TABLE} br ON br.id = bi.brand_id
-                 LEFT JOIN ${ANALYTICS_PRODUCT_TABLE} p ON p.id = bi.product_id
-                 ${where}
-                 ORDER BY COALESCE(bi.bill_date, ${BILL_DATE_EXPR}) DESC, bi.id DESC
-                 LIMIT ? OFFSET ?`,
-                [...params, filters.limit, offset]
-            );
+                FROM bills b
+                ${itemsJoin()}
+                ${whereClause(conditions)}
+            `;
 
-            const [countRows] = await db.query<any[]>(
-                `SELECT COUNT(*) AS total
-                 FROM ${BILL_ITEMS_TABLE} bi
-                 INNER JOIN bills b ON b.id = bi.bill_id
-                 LEFT JOIN ${ANALYTICS_COMPANY_TABLE} c ON c.id = bi.company_id
-                 LEFT JOIN ${ANALYTICS_BRAND_TABLE} br ON br.id = bi.brand_id
-                 LEFT JOIN ${ANALYTICS_PRODUCT_TABLE} p ON p.id = bi.product_id
-                 ${where}`,
-                params
+            const rows = await this.runPagedQuery<ItemScanDbRow>(
+                baseQuery,
+                params,
+                filters,
+                `ORDER BY ${billDateExpr()} DESC, b.id DESC, jt.item_index DESC`
             );
-            const total = toNumber(countRows[0]?.total);
+            const total = await this.countGroupedRows(`SELECT 1 AS total_marker FROM (${baseQuery}) item_scans`, params);
 
-            return ok({
-                filters: pickAnalyticsFilters(filters),
-                rows: rows.map<ItemScanRow>((row) => ({
+            return ok(buildAnalyticsList(
+                filters,
+                rows.map<ItemScanRow>((row) => ({
                     bill_item_id: Number(row.bill_item_id),
                     bill_id: Number(row.bill_id),
                     user_id: Number(row.user_id),
-                    company_id: row.company_id ? Number(row.company_id) : null,
+                    company_id: row.company_id !== null ? Number(row.company_id) : null,
                     company_name: row.company_name,
-                    brand_id: row.brand_id ? Number(row.brand_id) : null,
+                    brand_id: row.brand_id !== null ? Number(row.brand_id) : null,
                     brand_name: row.brand_name ?? null,
-                    product_id: row.product_id ? Number(row.product_id) : null,
+                    product_id: row.product_id !== null ? Number(row.product_id) : null,
                     product_name: row.product_name ?? null,
                     product_name_raw: row.product_name_raw,
                     category_l1: row.category_l1 ?? null,
@@ -876,10 +891,10 @@ class AdminAnalyticsRepositoryImpl {
                     city: row.city ?? null,
                     area: row.area ?? null,
                     bill_date: row.bill_date ?? null,
-                    bill_status: row.bill_status as BillStatus,
+                    bill_status: row.bill_status,
                 })),
-                pagination: normalizePagination(filters.page, filters.limit, total),
-            });
+                calculatePagination(filters.page, filters.limit, total)
+            ));
         } catch (error) {
             logger.error('Error fetching item scans', error);
             return err(ERRORS.DATABASE_ERROR);
@@ -889,107 +904,116 @@ class AdminAnalyticsRepositoryImpl {
     async getCompanyProducts(
         companyId: number,
         filters: DrilldownFilters
-    ): Promise<Result<QueryPagination<DrilldownRow>, RequestError>> {
-        return this.getGroupedDrilldown(
+    ): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>> {
+        return this.getDrilldownRows(
             { ...filters, company_id: companyId },
-            'product',
-            'bi.product_id',
-            `COALESCE(p.product_name, bi.product_name_normalized, bi.product_name_raw)`
+            productIdExpr(),
+            productNameExpr(),
+            ['CAST(b.id AS CHAR)', brandNameExpr(), productNameExpr()]
         );
     }
 
     async getBrandProducts(
         brandId: number,
         filters: DrilldownFilters
-    ): Promise<Result<QueryPagination<DrilldownRow>, RequestError>> {
-        return this.getGroupedDrilldown(
+    ): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>> {
+        return this.getDrilldownRows(
             { ...filters, brand_id: brandId },
-            'product',
-            'bi.product_id',
-            `COALESCE(p.product_name, bi.product_name_normalized, bi.product_name_raw)`
+            productIdExpr(),
+            productNameExpr(),
+            ['CAST(b.id AS CHAR)', brandNameExpr(), productNameExpr()]
         );
     }
 
     async getProductCompanies(
         productId: number,
         filters: DrilldownFilters
-    ): Promise<Result<QueryPagination<DrilldownRow>, RequestError>> {
-        return this.getGroupedDrilldown(
+    ): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>> {
+        return this.getDrilldownRows(
             { ...filters, product_id: productId },
-            'company',
-            'bi.company_id',
-            `COALESCE(c.company_name, b.merchant_name, 'Unknown')`
+            companyIdExpr(),
+            companyNameExpr(),
+            ['CAST(b.id AS CHAR)', companyNameExpr()]
         );
     }
 
-    private async getGroupedDrilldown(
+    private async getDrilldownRows(
         filters: DrilldownFilters,
-        type: 'company' | 'product',
-        idColumn: string,
-        nameExpr: string
-    ): Promise<Result<QueryPagination<DrilldownRow>, RequestError>> {
+        idExpr: string,
+        nameExpr: string,
+        searchColumns: string[]
+    ): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>> {
         try {
-            const params: (string | number)[] = [];
-            const conditions = buildBillConditions(
-                filters,
-                params,
-                {
-                    defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
-                    searchColumns: type === 'company'
-                        ? ['c.company_name', 'b.merchant_name']
-                        : ['p.product_name', 'bi.product_name_raw'],
-                    companyColumn: 'bi.company_id',
-                    brandColumn: 'bi.brand_id',
-                    productColumn: 'bi.product_id',
-                }
-            );
-            const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-            const offset = (filters.page - 1) * filters.limit;
-
+            const params: SqlParam[] = [];
+            const conditions = buildItemConditions(filters, params, {
+                defaultStatuses: DEFAULT_ANALYTICS_STATUSES,
+                searchColumns,
+            });
             const baseQuery = `
                 SELECT
-                    ${idColumn} AS id,
+                    ${idExpr} AS id,
                     ${nameExpr} AS name,
-                    COUNT(DISTINCT bi.bill_id) AS bill_count,
+                    COUNT(DISTINCT b.id) AS bill_count,
                     COUNT(*) AS scan_count,
-                    COALESCE(SUM(COALESCE(bi.quantity, 1)), 0) AS total_quantity,
-                    COALESCE(SUM(bi.line_amount), 0) AS total_sales_amount
-                FROM ${BILL_ITEMS_TABLE} bi
-                INNER JOIN bills b ON b.id = bi.bill_id
-                LEFT JOIN ${ANALYTICS_COMPANY_TABLE} c ON c.id = bi.company_id
-                LEFT JOIN ${ANALYTICS_PRODUCT_TABLE} p ON p.id = bi.product_id
-                ${where}
-                GROUP BY ${idColumn}, ${nameExpr}
+                    COALESCE(SUM(${quantityExpr()}), 0) AS total_quantity,
+                    COALESCE(SUM(${lineAmountExpr()}), 0) AS total_sales_amount
+                FROM bills b
+                ${itemsJoin()}
+                ${whereClause(conditions)}
+                GROUP BY ${idExpr}, ${nameExpr}
             `;
 
-            const [rows] = await db.query<any[]>(
-                `${baseQuery}
-                 ORDER BY total_sales_amount DESC, scan_count DESC
-                 LIMIT ? OFFSET ?`,
-                [...params, filters.limit, offset]
-            );
-            const [countRows] = await db.query<any[]>(
-                `SELECT COUNT(*) AS total FROM (${baseQuery}) drilldown_groups`,
-                params
-            );
-            const total = toNumber(countRows[0]?.total);
+            const rows = await this.runPagedQuery<DrilldownDbRow>(baseQuery, params, filters, 'ORDER BY total_sales_amount DESC, scan_count DESC');
+            const total = await this.countGroupedRows(baseQuery, params);
 
-            return ok({
-                filters: pickAnalyticsFilters(filters),
-                rows: rows.map<DrilldownRow>((row) => ({
-                    id: row.id ? Number(row.id) : null,
+            return ok(buildAnalyticsList(
+                filters,
+                rows.map<DrilldownRow>((row) => ({
+                    id: row.id !== null ? Number(row.id) : null,
                     name: row.name,
                     bill_count: toNumber(row.bill_count),
                     scan_count: toNumber(row.scan_count),
                     total_quantity: toNumber(row.total_quantity),
                     total_sales_amount: toNumber(row.total_sales_amount),
                 })),
-                pagination: normalizePagination(filters.page, filters.limit, total),
-            });
+                calculatePagination(filters.page, filters.limit, total)
+            ));
         } catch (error) {
             logger.error('Error fetching analytics drilldown', error);
             return err(ERRORS.DATABASE_ERROR);
         }
+    }
+
+    private async runPagedQuery<T extends RowDataPacket>(
+        baseQuery: string,
+        params: SqlParam[],
+        filters: AnalyticsFilters,
+        orderByClause: string
+    ): Promise<T[]> {
+        const offset = (filters.page - 1) * filters.limit;
+        const [rows] = await db.query<T[]>(
+            `${baseQuery}
+             ${orderByClause}
+             LIMIT ? OFFSET ?`,
+            [...params, filters.limit, offset]
+        );
+        return rows;
+    }
+
+    private async countGroupedRows(baseQuery: string, params: SqlParam[]): Promise<number> {
+        const [rows] = await db.query<CountRow[]>(
+            `SELECT COUNT(*) AS total FROM (${baseQuery}) analytics_groups`,
+            params
+        );
+        return toNumber(rows[0]?.total);
+    }
+
+    private async sumGroupedSales(baseQuery: string, params: SqlParam[]): Promise<number> {
+        const [rows] = await db.query<TotalSalesRow[]>(
+            `SELECT COALESCE(SUM(total_sales_amount), 0) AS total_sales_amount FROM (${baseQuery}) analytics_groups`,
+            params
+        );
+        return toNumber(rows[0]?.total_sales_amount);
     }
 }
 

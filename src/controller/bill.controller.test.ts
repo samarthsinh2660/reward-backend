@@ -47,7 +47,6 @@ const mockUserRepository = {
 const mockCallBillProcessor = jest.fn<any>();
 const mockDrawReward        = jest.fn<any>();
 const mockUploadBillImage   = jest.fn<any>();
-const mockSyncBillAnalyticsSnapshot = jest.fn<any>();
 
 jest.unstable_mockModule('../repositories/bill.repository.ts', () => ({
     BillRepository: mockBillRepository,
@@ -67,14 +66,11 @@ jest.unstable_mockModule('../repositories/user.repository.ts', () => ({
 
 jest.unstable_mockModule('../services/bill-processor.service.ts', () => ({
     callBillProcessor: mockCallBillProcessor,
+    enrichLineItems: jest.fn((items) => items),
 }));
 
 jest.unstable_mockModule('../services/gcp-storage.service.ts', () => ({
     uploadBillImage: mockUploadBillImage,
-}));
-
-jest.unstable_mockModule('../services/admin.analytics-sync.service.ts', () => ({
-    syncBillAnalyticsSnapshot: mockSyncBillAnalyticsSnapshot,
 }));
 
 jest.unstable_mockModule('./reward.controller.ts', () => ({
