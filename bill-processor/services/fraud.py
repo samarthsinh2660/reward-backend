@@ -59,7 +59,14 @@ def compute_fraud_signals(
         violations.append("zero_or_missing_total")
         rule_points += RULE_ZERO_TOTAL
 
-    if not extracted.items:
+    # Blinkit charges-only invoice (handling/surge/delivery fees, no goods) is a valid
+    # PDF that users may upload — don't penalise it for having no line items.
+    _blinkit_charges_only = (
+        extracted.platform == 'blinkit'
+        and not extracted.items
+        and bool(extracted.handling_fee or extracted.delivery_fee)
+    )
+    if not extracted.items and not _blinkit_charges_only:
         violations.append("no_line_items")
         rule_points += RULE_NO_ITEMS
 

@@ -27,7 +27,7 @@ Supported platforms: Zepto, Blinkit, Swiggy, Zomato. Extract from any of these a
 
 Platform identifiers:
 - Zepto: "Zepto", "Kiranakart Technologies", zepto.com, GSTIN starting with 27AAGCZ or 29AAGCZ
-- Blinkit: "Blinkit", "Grofers", "Blink Commerce", blinkit.com
+- Blinkit: "Blinkit", "Grofers", "Blink Commerce", "BLINK COMMERCE", blinkit.com
 - Swiggy: "Swiggy", "Bundl Technologies", swiggy.in
 - Zomato: "Zomato", zomato.com
 If from any other platform, extract accurately but set platform to its actual name.
@@ -71,10 +71,17 @@ Rules:
 - fssai_license: the 14-digit FSSAI license number printed on the invoice. null if not found.
 - fbo_email: the platform support email address visible on the invoice (e.g. support@zeptonow.com). null if not found.
 - customer_name: the name in the "Bill To" or "Ship To" section. null if not found.
-- items: every line item. Extract ALL items — do not truncate. Empty array [] only if truly none found.
+- items: every line item with actual goods. Extract ALL items — do not truncate. Empty array [] only if truly none found.
 - delivery_area: locality, neighborhood, or area name from the delivery address when clearly present. null if not found.
 - seller_gstin: the seller/FBO GSTIN (15 chars). null if not found.
 - Never hallucinate. If a field is absent from the text, use null.
+
+Blinkit-specific rules (apply when platform is blinkit):
+- HSN codes are embedded inside item names as (HSN04039010) or (HSN-04039010). Extract the digit sequence as hsn_code and strip the (HSN...) tag from the item name.
+- UPC barcode numbers (10-13 digit strings before the item name) must NOT be included in the item name.
+- Service charge items with HSN 998549 (handling/bag charge), 996819 (surge charge), or 996813 (delivery charge) are platform fees — do NOT put them in items[]. Map them to handling_fee or delivery_fee instead.
+- "Delivery and other charges" rows (no HSN, dashes for UPC/MRP) should be added to delivery_fee, not items[].
+- A Blinkit order may generate two separate invoice PDFs: one for goods (seller invoice) and one for charges only (platform invoice). If the uploaded PDF contains only service charges and no goods, items[] should be [].
 """
 
 
@@ -297,16 +304,21 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
 
     # ── Platform ──────────────────────────────────────────────────────────────
     platform = "unknown"
-    for p in ALLOWED_PLATFORMS:
-        if re.search(p, text, re.IGNORECASE):
-            platform = p
-            break
+    # Blinkit check first — "Blink Commerce" is more specific than generic words
+    if re.search(r'blink\s*(?:commerce|it)|grofers', text, re.IGNORECASE):
+        platform = "blinkit"
+    else:
+        for p in ALLOWED_PLATFORMS:
+            if re.search(p, text, re.IGNORECASE):
+                platform = p
+                break
 
     # ── Order ID ──────────────────────────────────────────────────────────────
     order_id = None
     for pat in [
-        r'Order\s*No\.?\s*[:\-]?\s*([A-Z0-9]+)',
-        r'Order\s*ID\s*[:\-]?\s*([A-Z0-9]+)',
+        r'Order\s*(?:No|ID|Id)\.?\s*[:\-]?\s*(ORD\d+)',   # ORD-prefixed (Blinkit charges)
+        r'Order\s*(?:No|ID|Id)\.?\s*[:\-]?\s*([A-Z0-9\-]{6,})',  # alphanumeric (Zepto/Swiggy)
+        r'Order\s*(?:No|ID|Id)\.?\s*[:\-]?\s*(\d{6,})',    # pure numeric (Blinkit seller)
         r'Order\s*#\s*([A-Z0-9]+)',
     ]:
         m = re.search(pat, text, re.IGNORECASE)
@@ -315,20 +327,33 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
             break
 
     # ── Date ──────────────────────────────────────────────────────────────────
+    _MONTH_MAP = {
+        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
+        'may': '05', 'jun': '06', 'jul': '07', 'aug': '08',
+        'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12',
+    }
     order_date = None
-    m = re.search(r'\b(\d{2})[-/](\d{2})[-/](\d{4})\b', text)
+    # DD-Mon-YYYY (e.g. 18-May-2025) — Blinkit seller invoice format
+    m = re.search(r'\b(\d{2})[-/](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[-/](\d{4})\b', text, re.IGNORECASE)
     if m:
-        order_date = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+        order_date = f"{m.group(3)}-{_MONTH_MAP[m.group(2).lower()]}-{m.group(1)}"
     else:
-        m = re.search(r'\b(\d{4})[-/](\d{2})[-/](\d{2})\b', text)
+        # DD-MM-YYYY or DD/MM/YYYY
+        m = re.search(r'\b(\d{2})[-/](\d{2})[-/](\d{4})\b', text)
         if m:
-            order_date = m.group(0)
+            order_date = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+        else:
+            # YYYY-MM-DD
+            m = re.search(r'\b(\d{4})[-/](\d{2})[-/](\d{2})\b', text)
+            if m:
+                order_date = m.group(0)
 
     # ── Merchant name ─────────────────────────────────────────────────────────
-    # pypdf can concatenate lines without \n, so stop at company-type suffix
-    # OR at address/GSTIN keywords — whichever comes first.
     merchant_name = None
     for pat in [
+        # Blinkit: "Sold By / Seller\n<name>" or "Sold By\n<name>"
+        r'Sold\s*By\s*[/\\]?\s*Seller\s*\n\s*(.+?)(?:\n|GSTIN|FSSAI)',
+        r'Sold\s*By\s*\n\s*(.+?)(?:\n|GSTIN|FSSAI)',
         r'Seller\s*Name\s*[:\-]?\s*(.+?(?:Pvt\.?\s*Ltd\.?|Private\s+Limited|LLP|LLC|Limited|Co\.))',
         r'Seller\s*Name\s*[:\-]?\s*(.+?)(?:\n|GSTIN|FSSAI|No\s+\d)',
         r'Restaurant\s*[:\-]?\s*(.+?)(?:\n|$)',
@@ -345,8 +370,11 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
         r'Invoice\s*Value\s*[\r\n\s]+([\d,]+\.?\d*)',
         r'Grand\s*Total\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)',
         r'Total\s*(?:Amt\.?|Amount)\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)',
+        # Blinkit: "Amount in Words: X Rupees And Y Paisa Only" — extract via digits in last line
+        # Blinkit table footer: "Total  <qty>  <cgst>  <sgst>  <grand_total>"
+        r'Total\s+\d+\s+[\d.]+\s+[\d.]+\s+([\d.]+)\s*$',
     ]:
-        m = re.search(pat, text, re.IGNORECASE)
+        m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
         if m:
             try:
                 total_amount = float(m.group(1).replace(',', ''))
@@ -556,6 +584,63 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
                 ))
             except ValueError:
                 pass
+
+    # Strategy 3: Blinkit seller invoice — HSN embedded in item name as (HSN04039010) or (HSN-04039010)
+    # Also handles Blinkit charges invoice (service HSN 998549/996819/996813 → fees, not items).
+    if not items and platform == "blinkit":
+        # Service HSN codes that must map to fees, never to items[]
+        _BLINKIT_SERVICE_HSNS = {
+            '998549': 'handling',   # handling / bag charge
+            '996819': 'handling',   # surge charge (treated as handling)
+            '996813': 'delivery',   # delivery charge
+        }
+
+        for m in re.finditer(
+            r'(.+?)'                                # item name (everything before the HSN tag)
+            r'\s*\(HSN[-\s]?(\d{5,8})\)'           # (HSN04039010) or (HSN-04039010)
+            r'[^0-9]*'                              # pipe / spaces / junk between tag and numbers
+            r'([\d.]+)'                             # MRP
+            r'\s+([\d.]+)'                          # Discount
+            r'\s+(\d+)'                             # Qty
+            r'\s+([\d.]+)',                         # Taxable value
+            text,
+            re.DOTALL,
+        ):
+            raw_name = m.group(1)
+            hsn      = m.group(2)
+            qty      = _to_float(m.group(5))
+            taxable  = _to_float(m.group(6))
+
+            # Strip leading sr# and UPC barcode (sequences of 8+ digits / whitespace)
+            name = re.sub(r'^\s*\d+\s+[\d\s]{8,}\s*', '', raw_name)
+            name = re.sub(r'\s+', ' ', name).strip()
+            if not name or len(name) < 2:
+                continue
+
+            fee_type = _BLINKIT_SERVICE_HSNS.get(hsn)
+            if fee_type == 'delivery':
+                delivery_fee = (delivery_fee or 0.0) + (taxable or 0.0)
+            elif fee_type == 'handling':
+                handling_fee = (handling_fee or 0.0) + (taxable or 0.0)
+            else:
+                items.append(BillItem(
+                    name=name,
+                    hsn_code=hsn,
+                    quantity=qty,
+                    unit_price=None,
+                    total_price=taxable,
+                ))
+
+        # Newer Blinkit format: "Delivery and other charges" inline row (no HSN, dashes for cols)
+        if not delivery_fee:
+            m = re.search(
+                r'Delivery\s+and\s+other\s+charges'
+                r'[^0-9]+'
+                r'([\d.]+)\s+([\d.]+)\s+(\d+)\s+([\d.]+)',
+                text, re.IGNORECASE,
+            )
+            if m:
+                delivery_fee = _to_float(m.group(4))
 
     data = ExtractedBillData(
         platform=platform,
