@@ -10,6 +10,7 @@ import authRouter from './routes/auth.route.ts';
 import adminAuthRouter from './routes/admin.auth.route.ts';
 import billRouter from './routes/bill.route.ts';
 import adminRewardRouter from './routes/admin.reward.route.ts';
+import adminAnalyticsRouter from './routes/admin.analytics.route.ts';
 import userRouter from './routes/user.route.ts';
 import { createLogger } from './utils/logger.ts';
 
@@ -61,6 +62,7 @@ async function start() {
     app.use('/api/admin/auth', adminAuthRouter);
     app.use('/api/bills', billRouter);
     app.use('/api/admin', adminRewardRouter);
+    app.use('/api/admin/analytics', adminAnalyticsRouter);
 
     // Error handlers — must be last
     app.use(notFoundHandler);

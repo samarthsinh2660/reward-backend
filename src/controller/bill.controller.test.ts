@@ -66,6 +66,7 @@ jest.unstable_mockModule('../repositories/user.repository.ts', () => ({
 
 jest.unstable_mockModule('../services/bill-processor.service.ts', () => ({
     callBillProcessor: mockCallBillProcessor,
+    enrichLineItems: jest.fn((items) => items),
 }));
 
 jest.unstable_mockModule('../services/gcp-storage.service.ts', () => ({
