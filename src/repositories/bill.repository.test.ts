@@ -471,7 +471,6 @@ describe('BillRepository.findByPhash', () => {
 
 describe('BillRepository.findByOrderIdAndPlatform', () => {
     it('returns bill from another user with same order_id + platform', async () => {
-        // user 20 uploaded this order first
         await BillRepository.create(makeBillData({
             user_id:     20,
             order_id:    'ORD-CROSS',
@@ -480,27 +479,27 @@ describe('BillRepository.findByOrderIdAndPlatform', () => {
             phash:       'ph1',
         }) as any);
 
-        // user 10 tries to upload the same order — should detect cross-user dup
-        const result = await BillRepository.findByOrderIdAndPlatform('ORD-CROSS', 'zomato', 10);
+        const result = await BillRepository.findByOrderIdAndPlatform('ORD-CROSS', 'zomato');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) expect(result.value).not.toBeNull();
     });
 
-    it('does not flag own bill as cross-user duplicate (excludeUserId works)', async () => {
+    it('also catches same-user duplicate order (any user is checked now)', async () => {
         await BillRepository.create(makeBillData({
             user_id:  10,
             order_id: 'ORD-MINE',
             platform: 'swiggy',
         }) as any);
 
-        const result = await BillRepository.findByOrderIdAndPlatform('ORD-MINE', 'swiggy', 10);
+        const result = await BillRepository.findByOrderIdAndPlatform('ORD-MINE', 'swiggy');
 
+        // Same user's own order must also be detected as a duplicate
         expect(result.isOk()).toBe(true);
-        if (result.isOk()) expect(result.value).toBeNull();
+        if (result.isOk()) expect(result.value).not.toBeNull();
     });
 
-    it('does not flag failed bills as cross-user duplicates', async () => {
+    it('does not flag failed bills as duplicates', async () => {
         await BillRepository.create(makeBillData({
             user_id:  20,
             order_id: 'ORD-FAIL',
@@ -510,7 +509,7 @@ describe('BillRepository.findByOrderIdAndPlatform', () => {
             phash:    'ph1',
         }) as any);
 
-        const result = await BillRepository.findByOrderIdAndPlatform('ORD-FAIL', 'blinkit', 10);
+        const result = await BillRepository.findByOrderIdAndPlatform('ORD-FAIL', 'blinkit');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) expect(result.value).toBeNull();
@@ -525,7 +524,7 @@ describe('BillRepository.findByOrderIdAndPlatform', () => {
             phash:    'ph1',
         }) as any);
 
-        const result = await BillRepository.findByOrderIdAndPlatform('ORD-X', 'zomato', 10);
+        const result = await BillRepository.findByOrderIdAndPlatform('ORD-X', 'zomato');
 
         expect(result.isOk()).toBe(true);
         if (result.isOk()) expect(result.value).toBeNull();

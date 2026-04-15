@@ -13,6 +13,9 @@ const mockBillRepository = {
     findBySha256Hash:          jest.fn<any>(),
     findByPhash:               jest.fn<any>(),
     findByOrderIdAndPlatform:  jest.fn<any>(),
+    findByFuzzyMatch:          jest.fn<any>(),
+    findByPdfMetadataHash:     jest.fn<any>(),
+    findStranded:              jest.fn<any>(),
     updateStatus:              jest.fn<any>(),
     setVerified:               jest.fn<any>(),
     setChestOpened:            jest.fn<any>(),
@@ -183,7 +186,7 @@ function makeProcessorSuccess(overrides: Record<string, unknown> = {}) {
                 is_supported_platform: true,
                 order_id: 'ORD-001',
                 total_amount: 250.00,
-                order_date: '2024-06-01',
+                order_date: new Date().toISOString().slice(0, 10),   // today — passes 30-day sanity check
                 items: [],
             },
             fraud_signals: {
@@ -219,6 +222,8 @@ function setupProcessHappy() {
     mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess());
     mockBillRepository.findByPhash.mockResolvedValue(ok(null));
     mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(null));
+    mockBillRepository.findByFuzzyMatch.mockResolvedValue(ok(null));
+    mockBillRepository.findByPdfMetadataHash.mockResolvedValue(ok(null));
     mockUploadBillImage.mockResolvedValue(ok({
         url:      'https://storage.googleapis.com/bucket/bills/10/bill_1.jpg',
         gcs_path: 'gs://bucket/bills/10/bill_1.jpg',
@@ -380,11 +385,12 @@ describe('processBillInBackground', () => {
         );
     });
 
-    it('marks rejected when cross-user order_id + platform duplicate found', async () => {
+    it('marks rejected when order_id + platform duplicate found (any user)', async () => {
         mockBillRepository.updateStatus.mockResolvedValue(ok(undefined));
         mockRewardConfigRepository.getUploadLimits.mockResolvedValue(ok(makeUploadLimits()));
         mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess());
         mockBillRepository.findByPhash.mockResolvedValue(ok(null));
+        mockBillRepository.findByPdfMetadataHash.mockResolvedValue(ok(null));
         mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(makeBillRow({ user_id: 99 })));
 
         await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
@@ -405,6 +411,8 @@ describe('processBillInBackground', () => {
         }));
         mockBillRepository.findByPhash.mockResolvedValue(ok(null));
         mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(null));
+        mockBillRepository.findByFuzzyMatch.mockResolvedValue(ok(null));
+        mockBillRepository.findByPdfMetadataHash.mockResolvedValue(ok(null));
         mockUploadBillImage.mockResolvedValue(ok({ url: 'https://storage.googleapis.com/b/f.jpg', gcs_path: 'gs://b/f.jpg' }));
         mockBillRepository.updateProcessed.mockResolvedValue(ok(undefined));
 
@@ -428,6 +436,8 @@ describe('processBillInBackground', () => {
         }));
         mockBillRepository.findByPhash.mockResolvedValue(ok(null));
         mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(null));
+        mockBillRepository.findByFuzzyMatch.mockResolvedValue(ok(null));
+        mockBillRepository.findByPdfMetadataHash.mockResolvedValue(ok(null));
         mockBillRepository.updateProcessed.mockResolvedValue(ok(undefined));
 
         await processBillInBackground(1, 10, FILE, 'image/jpeg', 'bill.jpg');
@@ -445,6 +455,8 @@ describe('processBillInBackground', () => {
         mockCallBillProcessor.mockResolvedValue(makeProcessorSuccess());
         mockBillRepository.findByPhash.mockResolvedValue(ok(null));
         mockBillRepository.findByOrderIdAndPlatform.mockResolvedValue(ok(null));
+        mockBillRepository.findByFuzzyMatch.mockResolvedValue(ok(null));
+        mockBillRepository.findByPdfMetadataHash.mockResolvedValue(ok(null));
         mockUploadBillImage.mockResolvedValue(ok({ url: 'https://storage.googleapis.com/b/f.jpg', gcs_path: 'gs://b/f.jpg' }));
         mockRewardConfigRepository.getActiveTiers.mockResolvedValue(ok([]));
 

@@ -10,7 +10,7 @@ import { callBillProcessor, enrichLineItems } from '../services/bill-processor.s
 import { uploadBillImage } from '../services/gcp-storage.service.ts';
 import { drawReward } from './reward.controller.ts';
 import {
-    BillView, BillUploadResponse, ChestOpenResponse,
+    BillView, AdminBillView, BillUploadResponse, ChestOpenResponse,
     BillStatus, ProcessedBillData,
     ProcessedBillBaseData,
     PersistProcessedBillOutcome,
@@ -18,8 +18,14 @@ import {
     makePendingProcessedBillData,
     makeVerifiedProcessedBillData,
     toBillView,
+    toAdminBillView,
 } from '../models/bill.model.ts';
-import { toPlatform } from '../utils/bill.utils.ts';
+import {
+    toPlatform,
+    isValidGSTIN,
+    extractPdfMetadataHash,
+    platformConsistencyPenalty,
+} from '../utils/bill.utils.ts';
 import { Paginated } from '../types/pagination.ts';
 
 const logger = createLogger('@bill.controller');
@@ -50,7 +56,6 @@ async function persistProcessedBill(
         const orderCheck = await BillRepository.findByOrderIdAndPlatform(
             data.order_id,
             data.platform,
-            userId
         );
         if (orderCheck.isOk() && orderCheck.value && orderCheck.value.id !== billId) {
             await BillRepository.updateStatus(billId, 'rejected', 'Duplicate order ID');
@@ -173,7 +178,55 @@ export async function processBillInBackground(
         ...processorData.extracted_data,
         items: await enrichLineItems(processorData.extracted_data.items),
     };
-    const fraudScore = fraud_signals.fraud_score;
+
+    // ── Node-side fraud adjustments ──────────────────────────────────────────
+    // FastAPI produces a base fraud score. Node adds extra points for signals
+    // it can check more reliably: GSTIN validity, platform consistency, date sanity.
+    // Adjusted score is used for threshold evaluation and stored in the DB.
+
+    let fraudScore = fraud_signals.fraud_score;
+    const nodeFraudReasons: string[] = [];
+
+    // 1. Bill date sanity — reject stale (>30 days) or future-dated bills outright
+    if (extracted_data.order_date) {
+        const billDate  = new Date(extracted_data.order_date);
+        const now       = new Date();
+        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        if (billDate > now) {
+            await BillRepository.updateStatus(billId, 'rejected', 'Bill date is in the future');
+            logger.info(`Bill ${billId} rejected — future bill date: ${extracted_data.order_date}`);
+            return;
+        }
+        if (billDate < thirtyDaysAgo) {
+            await BillRepository.updateStatus(billId, 'rejected', 'Bill is older than 30 days');
+            logger.info(`Bill ${billId} rejected — bill date too old: ${extracted_data.order_date}`);
+            return;
+        }
+    }
+
+    // 2. GSTIN checksum validation — invalid checksum means the GSTIN was edited
+    if (extracted_data.seller_gstin && !isValidGSTIN(extracted_data.seller_gstin)) {
+        fraudScore += 20;
+        nodeFraudReasons.push(`invalid_gstin:${extracted_data.seller_gstin}`);
+        logger.info(`Bill ${billId} — GSTIN checksum failed: ${extracted_data.seller_gstin}`);
+    }
+
+    // 3. Platform email / FSSAI consistency
+    const platformPenalty = platformConsistencyPenalty(
+        extracted_data.platform,
+        extracted_data.fbo_email,
+        extracted_data.fssai_license,
+    );
+    if (platformPenalty > 0) {
+        fraudScore += platformPenalty;
+        nodeFraudReasons.push(`platform_mismatch:email_or_fssai`);
+        logger.info(`Bill ${billId} — platform consistency penalty: +${platformPenalty}`);
+    }
+
+    // Merge node-side reasons into fraud_signals for admin visibility
+    const finalFraudSignals = nodeFraudReasons.length > 0
+        ? { ...fraud_signals, node_rule_violations: nodeFraudReasons }
+        : fraud_signals;
 
     // Unsupported platform — bill is real but we don't support it yet
     if (!extracted_data.is_supported_platform) {
@@ -187,7 +240,9 @@ export async function processBillInBackground(
         return;
     }
 
-    // pHash near-duplicate check (exclude self — this bill already exists in DB as queued/processing)
+    // ── Duplicate detection ──────────────────────────────────────────────────
+
+    // pHash near-duplicate — catches visually identical bills regardless of user
     const phashCheck = await BillRepository.findByPhash(phash);
     if (phashCheck.isErr()) {
         logger.error(`Bill ${billId}: failed to check pHash duplicate`, phashCheck.error);
@@ -200,26 +255,62 @@ export async function processBillInBackground(
         return;
     }
 
-    // Cross-user duplicate: same order_id + platform from a different user
-    if (extracted_data.order_id && extracted_data.platform) {
-        const crossDup = await BillRepository.findByOrderIdAndPlatform(
-            extracted_data.order_id,
-            extracted_data.platform ?? '',
-            userId
-        );
-        if (crossDup.isErr()) {
-            logger.error(`Bill ${billId}: failed to check order duplicate`, crossDup.error);
+    // PDF metadata hash — catches re-exported PDFs with edited amounts/items
+    // (same creation metadata but different visual content → different pHash)
+    const pdfMetadataHash = fileMimetype === 'application/pdf'
+        ? extractPdfMetadataHash(fileBuffer)
+        : null;
+    if (pdfMetadataHash) {
+        const metaCheck = await BillRepository.findByPdfMetadataHash(pdfMetadataHash, billId);
+        if (metaCheck.isErr()) {
+            logger.error(`Bill ${billId}: failed to check PDF metadata duplicate`, metaCheck.error);
             await BillRepository.updateStatus(billId, 'failed', 'Internal error: duplicate check failed');
             return;
         }
-        if (crossDup.value) {
+        if (metaCheck.value) {
+            // Don't hard-reject — metadata collision can happen with re-downloaded PDFs.
+            // Push score up to force manual review.
+            fraudScore = Math.max(fraudScore, FRAUD_AUTO_APPROVE_MAX + 1);
+            nodeFraudReasons.push(`pdf_metadata_duplicate:bill_${metaCheck.value.id}`);
+            logger.info(`Bill ${billId} — PDF metadata matches bill ${metaCheck.value.id}, pushed to manual review`);
+        }
+    }
+
+    // Order ID duplicate — any user, same order_id + platform
+    if (extracted_data.order_id && extracted_data.platform) {
+        const orderDup = await BillRepository.findByOrderIdAndPlatform(
+            extracted_data.order_id,
+            extracted_data.platform,
+        );
+        if (orderDup.isErr()) {
+            logger.error(`Bill ${billId}: failed to check order duplicate`, orderDup.error);
+            await BillRepository.updateStatus(billId, 'failed', 'Internal error: duplicate check failed');
+            return;
+        }
+        if (orderDup.value && orderDup.value.id !== billId) {
             await BillRepository.updateStatus(billId, 'rejected', 'Duplicate order ID');
-            logger.info(`Bill ${billId} rejected — order_id duplicate`);
+            logger.info(`Bill ${billId} rejected — order_id duplicate of bill ${orderDup.value.id}`);
             return;
         }
     }
 
-    // Determine status based on fraud score
+    // Fuzzy duplicate — when order_id is null, match on (platform, bill_date, total_amount)
+    // from any user. Soft signal → push to manual review, not outright reject.
+    if (!extracted_data.order_id && extracted_data.platform && extracted_data.order_date && extracted_data.total_amount) {
+        const fuzzyDup = await BillRepository.findByFuzzyMatch(
+            extracted_data.platform,
+            extracted_data.order_date,
+            extracted_data.total_amount,
+            billId,
+        );
+        if (fuzzyDup.isOk() && fuzzyDup.value) {
+            fraudScore = Math.max(fraudScore, FRAUD_AUTO_APPROVE_MAX + 1);
+            nodeFraudReasons.push(`fuzzy_duplicate:bill_${fuzzyDup.value.id}`);
+            logger.info(`Bill ${billId} — fuzzy duplicate of bill ${fuzzyDup.value.id}, pushed to manual review`);
+        }
+    }
+
+    // Determine status based on final adjusted fraud score
     const billStatus: BillStatus =
         fraudScore > FRAUD_MANUAL_REVIEW_MAX ? 'rejected' :
         fraudScore > FRAUD_AUTO_APPROVE_MAX  ? 'pending'  :
@@ -228,13 +319,14 @@ export async function processBillInBackground(
     const platform = toPlatform(extracted_data.platform);
     const processedBase: ProcessedBillBaseData = {
         phash,
+        pdf_metadata_hash: pdfMetadataHash,
         platform,
         order_id: extracted_data.order_id,
         total_amount: extracted_data.total_amount,
         bill_date: extracted_data.order_date,
         extracted_data,
         fraud_score: fraudScore,
-        fraud_signals,
+        fraud_signals: finalFraudSignals,
     };
 
     // Auto-rejected — fill in metadata, no image stored
@@ -398,14 +490,15 @@ export const openChest = async (
 export const adminListBills = async (
     limit: number,
     before?: number,
-    status?: BillStatus
-): Promise<Result<Paginated<BillView>, RequestError>> => {
-    const result = await BillRepository.findAllAdmin(limit + 1, before, status);
+    status?: BillStatus,
+    search?: string,
+): Promise<Result<Paginated<AdminBillView>, RequestError>> => {
+    const result = await BillRepository.findAllAdmin(limit + 1, before, status, search);
     if (result.isErr()) return err(result.error);
 
     const rows = result.value;
     const hasNext = rows.length > limit;
-    const data = rows.slice(0, limit).map(toBillView);
+    const data = rows.slice(0, limit).map(toAdminBillView);
 
     return ok({
         data,
@@ -416,11 +509,22 @@ export const adminListBills = async (
     });
 };
 
+// ── Admin: get single bill (full detail incl. file_url for GCP view) ──────────
+
+export const getAdminBill = async (
+    billId: number
+): Promise<Result<AdminBillView, RequestError>> => {
+    const result = await BillRepository.findById(billId);
+    if (result.isErr()) return err(result.error);
+    if (!result.value) return err(ERRORS.BILL_NOT_FOUND);
+    return ok(toAdminBillView(result.value));
+};
+
 // ── Admin: approve bill (manual review) ──────────────────────────────────────
 
 export const adminApproveBill = async (
     billId: number
-): Promise<Result<BillView, RequestError>> => {
+): Promise<Result<AdminBillView, RequestError>> => {
     const billResult = await BillRepository.findById(billId);
     if (billResult.isErr()) return err(billResult.error);
     const bill = billResult.value;
@@ -458,7 +562,7 @@ export const adminApproveBill = async (
 
     const updated = await BillRepository.findById(billId);
     if (updated.isErr()) return err(updated.error);
-    return ok(toBillView(updated.value!));
+    return ok(toAdminBillView(updated.value!));
 };
 
 // ── Admin: reject bill ────────────────────────────────────────────────────────
@@ -466,7 +570,7 @@ export const adminApproveBill = async (
 export const adminRejectBill = async (
     billId: number,
     reason: string
-): Promise<Result<BillView, RequestError>> => {
+): Promise<Result<AdminBillView, RequestError>> => {
     const billResult = await BillRepository.findById(billId);
     if (billResult.isErr()) return err(billResult.error);
     const bill = billResult.value;
@@ -480,5 +584,5 @@ export const adminRejectBill = async (
 
     const updated = await BillRepository.findById(billId);
     if (updated.isErr()) return err(updated.error);
-    return ok(toBillView(updated.value!));
+    return ok(toAdminBillView(updated.value!));
 };

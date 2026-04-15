@@ -18,12 +18,14 @@ export interface IBillRepository {
     findByUserId(userId: number, limit: number, before?: number, statuses?: BillStatus[], search?: string): Promise<Result<Bill[], RequestError>>;
     findBySha256Hash(hash: string): Promise<Result<Bill | null, RequestError>>;
     findByPhash(phash: string): Promise<Result<Bill | null, RequestError>>;
-    findByOrderIdAndPlatform(orderId: string, platform: string, excludeUserId: number): Promise<Result<Bill | null, RequestError>>;
+    findByOrderIdAndPlatform(orderId: string, platform: string): Promise<Result<Bill | null, RequestError>>;
+    findByFuzzyMatch(platform: string, billDate: string, totalAmount: number, excludeBillId: number): Promise<Result<Bill | null, RequestError>>;
+    findByPdfMetadataHash(hash: string, excludeBillId: number): Promise<Result<Bill | null, RequestError>>;
     updateStatus(id: number, status: BillStatus, rejectionReason?: string): Promise<Result<void, RequestError>>;
     setVerified(id: number, rewardAmount: number, coinReward: number, chestDecoys: [number, number]): Promise<Result<void, RequestError>>;
     setChestOpened(id: number): Promise<Result<void, RequestError>>;
     countUserUploads(userId: number): Promise<Result<BillUploadCounts, RequestError>>;
-    findAllAdmin(limit: number, before?: number, status?: BillStatus): Promise<Result<Bill[], RequestError>>;
+    findAllAdmin(limit: number, before?: number, status?: BillStatus, search?: string): Promise<Result<Bill[], RequestError>>;
 }
 
 class BillRepositoryImpl implements IBillRepository {
@@ -63,12 +65,14 @@ class BillRepositoryImpl implements IBillRepository {
         try {
             await db.query(
                 `UPDATE ${BILL_TABLE}
-                 SET phash = ?, platform = ?, order_id = ?, total_amount = ?, bill_date = ?,
-                     status = ?, rejection_reason = ?, extracted_data = ?, fraud_score = ?,
-                     fraud_signals = ?, file_url = ?, reward_amount = ?, coin_reward = ?, chest_decoys = ?
+                 SET phash = ?, pdf_metadata_hash = ?, platform = ?, order_id = ?,
+                     total_amount = ?, bill_date = ?, status = ?, rejection_reason = ?,
+                     extracted_data = ?, fraud_score = ?, fraud_signals = ?, file_url = ?,
+                     reward_amount = ?, coin_reward = ?, chest_decoys = ?
                  WHERE id = ?`,
                 [
                     data.phash,
+                    data.pdf_metadata_hash,
                     data.platform,
                     data.order_id,
                     data.total_amount,
@@ -210,22 +214,64 @@ class BillRepositoryImpl implements IBillRepository {
         }
     }
 
+    // Checks ALL users — any existing verified/pending/queued/processing bill with same order
     async findByOrderIdAndPlatform(
         orderId: string,
         platform: string,
-        excludeUserId: number
     ): Promise<Result<Bill | null, RequestError>> {
         try {
             const [rows] = await db.query<Bill[]>(
                 `SELECT id, user_id, order_id, platform, status FROM ${BILL_TABLE}
-                 WHERE order_id = ? AND platform = ? AND user_id != ?
+                 WHERE order_id = ? AND platform = ?
                  AND status NOT IN ('failed', 'rejected')
                  LIMIT 1`,
-                [orderId, platform, excludeUserId]
+                [orderId, platform]
             );
             return ok(rows.length > 0 ? rows[0] : null);
         } catch (error) {
             logger.error('Error finding bill by order id + platform', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    // When order_id is null — fuzzy dedup by (platform, bill_date, total_amount) across all users
+    async findByFuzzyMatch(
+        platform: string,
+        billDate: string,
+        totalAmount: number,
+        excludeBillId: number
+    ): Promise<Result<Bill | null, RequestError>> {
+        try {
+            const [rows] = await db.query<Bill[]>(
+                `SELECT id, user_id, platform, bill_date, total_amount, status FROM ${BILL_TABLE}
+                 WHERE platform = ? AND bill_date = ? AND total_amount = ?
+                 AND id != ? AND status NOT IN ('failed', 'rejected')
+                 LIMIT 1`,
+                [platform, billDate, totalAmount, excludeBillId]
+            );
+            return ok(rows.length > 0 ? rows[0] : null);
+        } catch (error) {
+            logger.error('Error finding bill by fuzzy match', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    // PDF metadata hash duplicate — same PDF re-exported with edited content
+    async findByPdfMetadataHash(
+        hash: string,
+        excludeBillId: number
+    ): Promise<Result<Bill | null, RequestError>> {
+        try {
+            const [rows] = await db.query<Bill[]>(
+                `SELECT id, user_id, pdf_metadata_hash, status FROM ${BILL_TABLE}
+                 WHERE pdf_metadata_hash = ? AND id != ?
+                 AND status NOT IN ('failed', 'rejected')
+                 LIMIT 1`,
+                [hash, excludeBillId]
+            );
+            return ok(rows.length > 0 ? rows[0] : null);
+        } catch (error) {
+            logger.error('Error finding bill by pdf metadata hash', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }
@@ -310,7 +356,8 @@ class BillRepositoryImpl implements IBillRepository {
     async findAllAdmin(
         limit: number,
         before?: number,
-        status?: BillStatus
+        status?: BillStatus,
+        search?: string,
     ): Promise<Result<Bill[], RequestError>> {
         try {
             const conditions: string[] = [];
@@ -323,6 +370,14 @@ class BillRepositoryImpl implements IBillRepository {
             if (status) {
                 conditions.push('status = ?');
                 params.push(status);
+            }
+            if (search) {
+                const like = `%${search}%`;
+                conditions.push(
+                    `(platform LIKE ? OR order_id LIKE ? OR CAST(total_amount AS CHAR) LIKE ?
+                      OR CAST(user_id AS CHAR) LIKE ? OR extracted_data LIKE ?)`
+                );
+                params.push(like, like, like, like, like);
             }
 
             const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

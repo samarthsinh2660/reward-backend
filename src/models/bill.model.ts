@@ -21,8 +21,9 @@ CREATE TABLE IF NOT EXISTS bills (
   id               INT AUTO_INCREMENT PRIMARY KEY,
   user_id          INT NOT NULL,
   file_url         VARCHAR(500),
-  sha256_hash      VARCHAR(64),
-  phash            VARCHAR(20),
+  sha256_hash         VARCHAR(64),
+  phash               VARCHAR(20),
+  pdf_metadata_hash   VARCHAR(64),
   platform         VARCHAR(100),
   order_id         VARCHAR(255),
   total_amount     DECIMAL(10, 2),
@@ -54,6 +55,7 @@ export interface Bill extends RowDataPacket {
     file_url: string | null;
     sha256_hash: string | null;
     phash: string | null;
+    pdf_metadata_hash: string | null;
     platform: BillPlatform | null;
     order_id: string | null;
     total_amount: number | null;
@@ -110,6 +112,7 @@ export type PersistProcessedBillOutcome = 'saved' | 'duplicate' | 'failed';
 // Full extracted data written back to the bill row after background processing completes
 export type ProcessedBillData = {
     phash: string;
+    pdf_metadata_hash: string | null;
     platform: BillPlatform;
     order_id: string | null;
     total_amount: number | null;
@@ -127,6 +130,7 @@ export type ProcessedBillData = {
 
 export type ProcessedBillBaseData = {
     phash: string;
+    pdf_metadata_hash: string | null;
     platform: BillPlatform;
     order_id: string | null;
     total_amount: number | null;
@@ -224,10 +228,26 @@ export type ChestOpenResponse = {
     coin_balance: number;
 };
 
+// Admin-only view — includes fields not exposed to regular users
+export type AdminBillView = BillView & {
+    user_id: number;
+    fraud_score: number;
+    fraud_signals: object | null;
+};
+
 // ── Converters ────────────────────────────────────────────────────────────────
 
 export function isSupportedPlatform(platform: string | null): platform is SupportedPlatform {
     return (SUPPORTED_PLATFORMS as readonly string[]).includes(platform ?? '');
+}
+
+export function toAdminBillView(row: Bill): AdminBillView {
+    return {
+        ...toBillView(row),
+        user_id:       row.user_id,
+        fraud_score:   row.fraud_score,
+        fraud_signals: row.fraud_signals ?? null,
+    };
 }
 
 export function toBillView(row: Bill): BillView {

@@ -25,8 +25,9 @@ CREATE TABLE IF NOT EXISTS bills (
   id               INT AUTO_INCREMENT PRIMARY KEY,
   user_id          INT NOT NULL,
   file_url         VARCHAR(500),                        -- NULL for failed bills (never stored if pipeline fails)
-  sha256_hash      VARCHAR(64),                         -- SHA-256 of file bytes — exact duplicate gate (checked before FastAPI)
-  phash            VARCHAR(20),                         -- perceptual hash — near-duplicate gate (computed by FastAPI)
+  sha256_hash         VARCHAR(64),                      -- SHA-256 of file bytes — exact duplicate gate (checked before FastAPI)
+  phash               VARCHAR(20),                      -- perceptual hash — near-duplicate gate (computed by FastAPI)
+  pdf_metadata_hash   VARCHAR(64),                      -- SHA-256 of PDF creation date + producer + author — catches re-exported same PDF with edited content
   platform         VARCHAR(100),                        -- swiggy | zomato | zepto | blinkit | unknown
   order_id         VARCHAR(255),
   total_amount     DECIMAL(10, 2),

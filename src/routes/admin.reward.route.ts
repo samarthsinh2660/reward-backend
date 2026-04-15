@@ -6,7 +6,7 @@ import { errorHandler } from '../middleware/error.middleware.ts';
 import { successResponse } from '../utils/response.ts';
 import { RewardConfigRepository } from '../repositories/reward_config.repository.ts';
 import { BILL_STATUSES } from '../models/bill.model.ts';
-import { adminListBills, adminApproveBill, adminRejectBill } from '../controller/bill.controller.ts';
+import { adminListBills, adminApproveBill, adminRejectBill, getAdminBill } from '../controller/bill.controller.ts';
 
 const SCHEMA = {
     UPDATE_TIER: z.object({
@@ -39,6 +39,7 @@ const SCHEMA = {
         limit:  z.coerce.number().int().min(1).max(100).default(20),
         before: z.coerce.number().int().optional(),
         status: z.enum(BILL_STATUSES).optional(),
+        search: z.string().min(1).max(100).optional(),
     }),
 
     BILL_ID: z.object({
@@ -113,12 +114,27 @@ adminRewardRouter.get(
     validateRequest({ query: SCHEMA.BILL_LIST }),
     async function (req: Request, res: Response, next: NextFunction) {
         const query = SCHEMA.BILL_LIST.parse(req.query);
-        const result = await adminListBills(query.limit, query.before, query.status);
+        const result = await adminListBills(query.limit, query.before, query.status, query.search);
         result.match(
             (data) => res.json(successResponse(data, 'Bills fetched')),
             (error) => next(error)
         );
     }
+);
+
+// ─── GET /api/admin/bills/:id ─────────────────────────────────────────────────
+// Returns full bill detail including file_url (GCP URL) so admin can view the PDF/image.
+// Also includes fraud_score, fraud_signals, and user_id not exposed on the user-facing endpoint.
+adminRewardRouter.get(
+    '/bills/:id',
+    validateRequest({ params: SCHEMA.BILL_ID }),
+    async function (req: Request, res: Response, next: NextFunction) {
+        const result = await getAdminBill(Number(req.params.id));
+        result.match(
+            (data) => res.json(successResponse(data, 'Bill fetched')),
+            (error) => next(error),
+        );
+    },
 );
 
 // ─── PATCH /api/admin/bills/:id/approve ──────────────────────────────────────
