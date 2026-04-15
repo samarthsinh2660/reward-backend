@@ -171,7 +171,7 @@ export async function processBillInBackground(
     const { phash, fraud_signals } = processorData;
     const extracted_data = {
         ...processorData.extracted_data,
-        items: enrichLineItems(processorData.extracted_data.items),
+        items: await enrichLineItems(processorData.extracted_data.items),
     };
     const fraudScore = fraud_signals.fraud_score;
 

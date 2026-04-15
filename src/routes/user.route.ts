@@ -4,6 +4,8 @@ import { errorHandler } from '../middleware/error.middleware.ts';
 import { successResponse } from '../utils/response.ts';
 import { getMyProfileSummary, getWalletSummary, updateMyProfile, requestEmailChange, verifyEmailChange } from '../controller/user.controller.ts';
 import { USER_GENDERS } from '../models/user.model.ts';
+import { BannerRepository } from '../repositories/banner.repository.ts';
+import { toBannerView } from '../models/banner.model.ts';
 
 const userRouter = Router();
 
@@ -95,6 +97,19 @@ userRouter.post(
             (error) => next(error)
         );
     }
+);
+
+// ─── GET /api/users/banners ───────────────────────────────────────────────────
+// Returns active banners for the home screen slider. No auth required.
+userRouter.get(
+    '/banners',
+    async function (_req: Request, res: Response, next: NextFunction) {
+        const result = await BannerRepository.findActive();
+        result.match(
+            (banners) => res.json(successResponse(banners.map(toBannerView), 'Banners fetched')),
+            (error)   => next(error),
+        );
+    },
 );
 
 userRouter.use(errorHandler);

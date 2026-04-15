@@ -75,6 +75,14 @@ export const ERRORS = {
     MIN_WITHDRAWAL_AMOUNT:     new RequestError('Minimum withdrawal amount is ₹100.',            50002, 400),
     UPI_ID_REQUIRED:           new RequestError('Please provide your UPI ID for withdrawal.',    50003, 400),
     WITHDRAWAL_PENDING:        new RequestError('You already have a pending withdrawal request.', 50004, 409),
+
+    // Banner domain (6xxxx)
+    BANNER_NOT_FOUND:          new RequestError('Banner not found.',                                          60001, 404),
+    BANNER_IMAGE_REQUIRED:     new RequestError('Banner image is required.',                                  60002, 400),
+    BANNER_INVALID_IMAGE:      new RequestError('Invalid image type. Upload a JPEG, PNG, or WebP.',          60003, 400),
+    BANNER_IMAGE_TOO_LARGE:    new RequestError('Image too large. Maximum size is 5 MB.',                    60004, 400),
+    BANNER_UPLOAD_FAILED:      new RequestError('Failed to upload banner image. Please try again.',          60005, 500),
+    BANNER_TITLE_REQUIRED:     new RequestError('Banner title is required.',                                  60006, 400),
 } as const;
 
 export function isRequestError(error: unknown): error is RequestError {

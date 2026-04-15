@@ -93,3 +93,58 @@ export async function uploadBillImage(
         return err(ERRORS.CLOUDINARY_UPLOAD_FAILED);
     }
 }
+
+/**
+ * Upload a banner image to GCP Cloud Storage.
+ * Images are resized to max 1200px wide and compressed to JPEG 85% quality.
+ * Object path: banners/banner_{uuid}.jpg
+ */
+export async function uploadBannerImage(
+    buffer: Buffer,
+): Promise<Result<StorageUploadResult, RequestError>> {
+    try {
+        const uploadBuffer = await sharp(buffer)
+            .resize({ width: 1200, withoutEnlargement: true })
+            .jpeg({ quality: 85, mozjpeg: true })
+            .toBuffer();
+
+        const filename  = `banners/banner_${crypto.randomUUID()}.jpg`;
+        const bucket    = getStorage().bucket(GCP_STORAGE_BUCKET);
+        const file      = bucket.file(filename);
+
+        await file.save(uploadBuffer, {
+            contentType: 'image/jpeg',
+            resumable: false,
+            metadata: {
+                cacheControl: 'public, max-age=31536000',
+            },
+        });
+
+        const url      = `https://storage.googleapis.com/${GCP_STORAGE_BUCKET}/${filename}`;
+        const gcs_path = `gs://${GCP_STORAGE_BUCKET}/${filename}`;
+
+        logger.info(`Banner image uploaded — ${gcs_path}`);
+        return ok({ url, gcs_path });
+
+    } catch (error) {
+        logger.error('GCP Storage banner upload failed', error);
+        return err(ERRORS.BANNER_UPLOAD_FAILED);
+    }
+}
+
+/**
+ * Delete a file from GCP Cloud Storage by its gcs_path (gs://bucket/path).
+ * Silent success if the file does not exist.
+ */
+export async function deleteGcsFile(gcs_path: string): Promise<void> {
+    try {
+        // gcs_path format: gs://bucket-name/object/path
+        const withoutScheme = gcs_path.replace(/^gs:\/\/[^/]+\//, '');
+        const bucket = getStorage().bucket(GCP_STORAGE_BUCKET);
+        await bucket.file(withoutScheme).delete({ ignoreNotFound: true });
+        logger.info(`GCS file deleted — ${gcs_path}`);
+    } catch (error) {
+        // Log but don't throw — DB record deletion is more important
+        logger.error(`GCS file delete failed for ${gcs_path}`, error);
+    }
+}

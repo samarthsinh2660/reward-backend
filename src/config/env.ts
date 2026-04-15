@@ -33,6 +33,9 @@ export const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 // Bill Processor microservice
 export const BILL_PROCESSOR_URL = process.env.BILL_PROCESSOR_URL!;
 
+// OpenAI — used for GPT brand extraction fallback
+export const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? '';
+
 // GCP Cloud Storage — Mumbai (asia-south1), Standard storage
 // Bucket must be pre-created with Standard class in asia-south1 region.
 // GCP_STORAGE_KEY_FILE → path to a dedicated Cloud Storage service account JSON key
