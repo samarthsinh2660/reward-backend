@@ -40,6 +40,8 @@ ALLOWED_PLATFORMS: frozenset[str] = frozenset({
     "zomato",
     "zepto",
     "blinkit",
+    "bbnow",     # BB Now (BigBasket Now) — Innovative Retail Concepts Pvt Ltd
+    "instamart", # Swiggy Instamart — grocery arm, distinct invoice format from Swiggy food
 })
 
 # ── FBO email domain registry ─────────────────────────────────────────────────
@@ -47,10 +49,12 @@ ALLOWED_PLATFORMS: frozenset[str] = frozenset({
 # A bill claiming to be from a platform but containing a different platform's
 # email domain is a strong spoofing signal.
 FBO_EMAIL_DOMAINS: dict[str, str] = {
-    "zepto":   "zeptonow.com",
-    "swiggy":  "swiggy.in",
-    "zomato":  "zomato.com",
-    "blinkit": "blinkit.com",
+    "zepto":     "zeptonow.com",
+    "swiggy":    "swiggy.in",        # invoicing@swiggy.in
+    "zomato":    "zomato.com",
+    "blinkit":   "blinkit.com",
+    "bbnow":     "bigbasket.com",    # invoicing/accounts@bigbasket.com
+    "instamart": "swiggy.in",        # invoicing@swiggy.in (same Swiggy entity)
 }
 
 # ── Fraud score thresholds ────────────────────────────────────────────────────

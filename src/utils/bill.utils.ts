@@ -52,19 +52,30 @@ export function extractPdfMetadataHash(buffer: Buffer): string | null {
 const _PLATFORM_SIGNATURES: Record<string, { domains: string[]; fssai_prefix?: string }> = {
     zomato: {
         domains:      ['zomato.com'],
-        fssai_prefix: '13',         // Zomato FSSAI starts with state code 13 (Haryana HO)
+        fssai_prefix: '13',   // Zomato FSSAI — state code 13 (Haryana HO)
     },
     swiggy: {
-        domains:      ['swiggy.com', 'bundl.com'],
-        fssai_prefix: '21',         // Swiggy FSSAI starts with 21 (Karnataka HO)
+        // invoicing@swiggy.in (Instamart) and support@swiggy.com (food delivery)
+        domains: ['swiggy.com', 'bundl.com', 'swiggy.in'],
+        // No fssai_prefix — Swiggy is a marketplace; seller FSSAI varies by region/state
     },
     zepto: {
         domains:      ['zeptonow.com', 'kiranakart.com'],
-        fssai_prefix: '27',         // Zepto FSSAI starts with 27 (Maharashtra HO)
+        fssai_prefix: '27',   // Zepto FSSAI — state code 27 (Maharashtra HO)
     },
     blinkit: {
         domains:      ['blinkit.com', 'grofers.com'],
-        fssai_prefix: '08',         // Blinkit FSSAI starts with 08 (Rajasthan HO)
+        fssai_prefix: '08',   // Blinkit FSSAI — state code 08 (Rajasthan HO)
+    },
+    bbnow: {
+        // BB Now (BigBasket Now) — Innovative Retail Concepts Pvt Ltd
+        domains: ['bigbasket.com', 'bbnow.com'],
+        // No fssai_prefix — BB holds a central FSSAI license (prefix '00'), not state-specific
+    },
+    instamart: {
+        // Swiggy Instamart — same Swiggy corporate entity, invoicing@swiggy.in
+        domains: ['swiggy.in', 'swiggy.com'],
+        // No fssai_prefix — sellers (Swinsta and 3rd parties) have varied FSSAI state codes
     },
 };
 

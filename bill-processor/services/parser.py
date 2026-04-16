@@ -23,18 +23,20 @@ def _get_client() -> OpenAI:
 
 
 SYSTEM_PROMPT = """You are a bill data extraction assistant for an Indian food delivery and quick-commerce cashback app.
-Supported platforms: Zepto, Blinkit, Swiggy, Zomato. Extract from any of these accurately.
+Supported platforms: Zepto, Blinkit, Swiggy, Zomato, BB Now, Swiggy Instamart. Extract from any of these accurately.
 
 Platform identifiers:
 - Zepto: "Zepto", "Kiranakart Technologies", zepto.com, GSTIN starting with 27AAGCZ or 29AAGCZ
 - Blinkit: "Blinkit", "Grofers", "Blink Commerce", "BLINK COMMERCE", blinkit.com
-- Swiggy: "Swiggy", "Bundl Technologies", swiggy.in
+- Swiggy: "Swiggy", "Bundl Technologies", swiggy.in — food delivery invoices (no IMSGA/SWIM prefix)
 - Zomato: "Zomato", zomato.com
+- BB Now: "BB Now", "bbnow", "BigBasket", "Innovative Retail Concepts", order IDs matching BNN-XXXXXXXXXX-YYYYMMDD → platform: "bbnow"
+- Swiggy Instamart: invoice numbers with "IMSGA" or "SWIM" prefix, seller is "Swinsta Ent Pvt Ltd", same Swiggy GSTIN → platform: "instamart"
 If from any other platform, extract accurately but set platform to its actual name.
 
 Return ONLY valid JSON matching this exact schema — no markdown, no explanation:
 {
-  "platform": "zepto | blinkit | swiggy | zomato | <other lowercase name> | \"unknown\"",
+  "platform": "zepto | blinkit | swiggy | zomato | bbnow | instamart | <other lowercase name> | \"unknown\"",
   "order_id": "string or null",
   "order_date": "YYYY-MM-DD or null",
   "merchant_name": "string or null",
@@ -82,6 +84,18 @@ Blinkit-specific rules (apply when platform is blinkit):
 - Service charge items with HSN 998549 (handling/bag charge), 996819 (surge charge), or 996813 (delivery charge) are platform fees — do NOT put them in items[]. Map them to handling_fee or delivery_fee instead.
 - "Delivery and other charges" rows (no HSN, dashes for UPC/MRP) should be added to delivery_fee, not items[].
 - A Blinkit order may generate two separate invoice PDFs: one for goods (seller invoice) and one for charges only (platform invoice). If the uploaded PDF contains only service charges and no goods, items[] should be [].
+
+Swiggy Instamart-specific rules (apply when platform is instamart):
+- Instamart PDFs are often merged: page 1 is the seller goods invoice (invoice number starts with IMSGA, from Swinsta Ent Pvt Ltd), page 2 is the Swiggy handling fee invoice (invoice starts with SWIM, from Swiggy Limited). Both belong to the same order.
+- total_amount = sum of both invoice totals (seller goods + handling fee).
+- Items in the IMSGA invoice are regular goods — include all in items[].
+- Line items with HSN 999799 ("Other Miscellaneous Services") in the SWIM invoice are Swiggy's handling fee — do NOT put them in items[]. Add their total to handling_fee instead.
+- Some orders have Rs. 0 handling fee (free handling) — handling_fee may be 0 or null.
+- order_id comes from the IMSGA seller invoice page (canonical order identifier).
+
+BB Now-specific rules (apply when platform is bbnow):
+- total_amount is the "Total Invoice value (In Figure)" line — NOT "Final Total" (which is the payment settlement breakdown, not the invoice value).
+- Order IDs match the format BNN-XXXXXXXXXX-YYYYMMDD. PDF line wrapping may insert a space before the date part — normalize by removing the space.
 """
 
 
@@ -106,13 +120,13 @@ class ClassifyResult:
         self.skipped = skipped    # True when OpenAI was unavailable — proceed with caution
 
 
-_CLASSIFY_PROMPT = """You are a document classifier for an Indian food delivery cashback app.
-Determine if the text is an order invoice or receipt from one of these platforms: Zepto, Swiggy, Zomato, Blinkit.
+_CLASSIFY_PROMPT = """You are a document classifier for an Indian food delivery and quick-commerce cashback app.
+Determine if the text is an order invoice or receipt from one of these platforms: Zepto, Swiggy, Swiggy Instamart, Zomato, Blinkit, BB Now.
 
-Reply ONLY with valid JSON (no markdown): {"is_bill": true or false, "platform": "zepto" or "swiggy" or "zomato" or "blinkit" or null}
+Reply ONLY with valid JSON (no markdown): {"is_bill": true or false, "platform": "zepto" or "swiggy" or "instamart" or "zomato" or "blinkit" or "bbnow" or null}
 
-- is_bill: true only if this is clearly an order invoice/tax receipt from one of the four platforms.
-- platform: detected platform in lowercase, or null if unrecognised.
+- is_bill: true only if this is clearly an order invoice/tax receipt from one of the six platforms.
+- platform: detected platform in lowercase ("bbnow" for BigBasket Now, "instamart" for Swiggy Instamart), or null if unrecognised.
 - Salary slips, bank statements, or any non-food-delivery document → is_bill: false.
 """
 
@@ -304,9 +318,16 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
 
     # ── Platform ──────────────────────────────────────────────────────────────
     platform = "unknown"
-    # Blinkit check first — "Blink Commerce" is more specific than generic words
+    # Check most-specific patterns first to avoid false matches on generic words.
     if re.search(r'blink\s*(?:commerce|it)|grofers', text, re.IGNORECASE):
+        # Blinkit — "Blink Commerce" is more specific than generic words
         platform = "blinkit"
+    elif re.search(r'bb\s*now|bbnow|bigbasket|innovative\s*retail\s*concepts', text, re.IGNORECASE):
+        # BB Now (BigBasket Now) — check before generic "swiggy" scan
+        platform = "bbnow"
+    elif re.search(r'instamart|swinsta|imsga|swim\d{6}', text, re.IGNORECASE):
+        # Swiggy Instamart — IMSGA/SWIM invoice prefix, Swinsta seller entity
+        platform = "instamart"
     else:
         for p in ALLOWED_PLATFORMS:
             if re.search(p, text, re.IGNORECASE):
@@ -316,6 +337,7 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
     # ── Order ID ──────────────────────────────────────────────────────────────
     order_id = None
     for pat in [
+        r'(BNN-\d{10}-\s?\d{8})',                           # BB Now: BNN-XXXXXXXXXX-YYYYMMDD (space before date is a common PDF line-wrap artifact)
         r'Order\s*(?:No|ID|Id)\.?\s*[:\-]?\s*(ORD\d+)',   # ORD-prefixed (Blinkit charges)
         r'Order\s*(?:No|ID|Id)\.?\s*[:\-]?\s*([A-Z0-9\-]{6,})',  # alphanumeric (Zepto/Swiggy)
         r'Order\s*(?:No|ID|Id)\.?\s*[:\-]?\s*(\d{6,})',    # pure numeric (Blinkit seller)
@@ -324,6 +346,8 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             order_id = m.group(1).strip()
+            # Normalize PDF line-wrap artefacts inside order IDs (e.g. "BNN-1234567890- 20260405")
+            order_id = re.sub(r'\s+', '', order_id)
             break
 
     # ── Date ──────────────────────────────────────────────────────────────────
@@ -367,10 +391,12 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
     # ── Total amount ──────────────────────────────────────────────────────────
     total_amount = None
     for pat in [
+        # BB Now: "Total Invoice value (In Figure): Rs.324.01"
+        # Must be highest priority — "Final Total" on BB Now bills is the payment settlement row, not invoice value
+        r'Total\s+Invoice\s+[Vv]alue\s+\([Ii]n\s+[Ff]igure\)\s*[:\-]?\s*(?:Rs\.?|₹)\s*([\d,]+\.?\d*)',
         r'Invoice\s*Value\s*[\r\n\s]+([\d,]+\.?\d*)',
         r'Grand\s*Total\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)',
         r'Total\s*(?:Amt\.?|Amount)\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)',
-        # Blinkit: "Amount in Words: X Rupees And Y Paisa Only" — extract via digits in last line
         # Blinkit table footer: "Total  <qty>  <cgst>  <sgst>  <grand_total>"
         r'Total\s+\d+\s+[\d.]+\s+[\d.]+\s+([\d.]+)\s*$',
     ]:
@@ -641,6 +667,114 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
             )
             if m:
                 delivery_fee = _to_float(m.group(4))
+
+    # Strategy 4: BB Now items
+    # BB Now table columns: SR# | ItemName | HSN(8-digit) | Qty | UnitPrice | UnitTaxableValue |
+    #   GrossValue | Discount | OtherCharges | TaxableValue | CGST% ...
+    # Strategy 1 fails here because HSN immediately follows the item name (no float before it).
+    if not items and platform == "bbnow":
+        for m in re.finditer(
+            r'(?m)^(\d{1,2})\s+'     # SR no (1-2 digits) — anchored to line start to avoid matching CGST values mid-row
+            r'(.+?)\s+'              # item name (non-greedy — stops at first 8-digit HSN)
+            r'(\d{8})\s+'            # HSN code (exactly 8 digits — very distinctive)
+            r'(\d+)\s+'              # Qty
+            r'([\d.]+)\s+'           # Unit Price
+            r'[\d.]+\s+'             # Unit Taxable Value (skip)
+            r'[\d.]+\s+'             # Gross Value (skip)
+            r'[\d.]+\s+'             # Discount/Margin (skip)
+            r'[\d.]+\s+'             # Other Charges (skip)
+            r'([\d.]+)\s+'           # Net Taxable Value ← total_price
+            r'[\d.]+%',              # CGST% — confirms this is a real item row
+            text, re.MULTILINE,
+        ):
+            name = re.sub(r'\s+', ' ', m.group(2)).strip()
+            if not name or len(name) < 2:
+                continue
+            qty        = _to_float(m.group(4))
+            unit_price = _to_float(m.group(5))
+            total_price = _to_float(m.group(6))
+            items.append(BillItem(
+                name=name,
+                hsn_code=m.group(3),
+                quantity=qty,
+                unit_price=unit_price,
+                total_price=total_price,
+            ))
+
+    # Strategy 5: Instamart seller invoice items
+    # Instamart table columns: SR. | Description | Qty | NOS | HSN(7-8 digit) | TaxableValue |
+    #   Discount | NetTaxableValue | CGST% | CGST | SGST% | SGST | Cess% | Cess | AddCess | TotalAmount
+    # Strategy 1 fails here because SR numbers use the "1." format (period after digit).
+    if not items and platform == "instamart":
+        for m in re.finditer(
+            r'(\d{1,2})\.\s+'        # SR no with trailing period (e.g. "1.")
+            r'(.+?)\s+'              # item name (non-greedy — stops before qty+NOS)
+            r'(\d+)\s+NOS\s+'        # Qty + unit type "NOS"
+            r'(\d{7,8})\s+'          # HSN code (7-8 digits)
+            r'[\d.]+\s+'             # Taxable Value (skip)
+            r'[\d.]+\s+'             # Discount (skip)
+            r'[\d.]+\s+'             # Net Taxable Value (skip)
+            r'[\d.]+\s+'             # CGST % (skip)
+            r'[\d.]+\s+'             # CGST amount (skip)
+            r'[\d.]+\s+'             # SGST % (skip)
+            r'[\d.]+\s+'             # SGST amount (skip)
+            r'[\d.]+\s+'             # Cess % (skip)
+            r'[\d.]+\s+'             # Cess amount (skip)
+            r'[\d.]+\s+'             # Additional Cess (skip)
+            r'([\d.]+)',             # Total Amount (inclusive of GST) ← total_price
+            text, re.DOTALL,
+        ):
+            name = re.sub(r'\s+', ' ', m.group(2)).strip()
+            if not name or len(name) < 2:
+                continue
+            qty         = _to_float(m.group(3))
+            total_price = _to_float(m.group(5))
+            unit_price  = (total_price / qty) if total_price and qty else None
+            items.append(BillItem(
+                name=name,
+                hsn_code=m.group(4),
+                quantity=qty,
+                unit_price=unit_price,
+                total_price=total_price,
+            ))
+
+    # Instamart post-processing:
+    # 1. Remove any 999799 items (Swiggy handling fee service code) that may have slipped
+    #    into items[] from other strategies, accumulating their value into handling_fee.
+    # 2. Extract handling fee from SWIM invoice total (merged PDFs) or inline format.
+    # 3. Correct total_amount — seller "Invoice Value" is goods-only; add handling_fee.
+    if platform == "instamart":
+        # Remove 999799 from items[] — safety net in case OpenAI or Strategy 1 included it
+        filtered: list[BillItem] = []
+        for item in items:
+            if item.hsn_code == '999799':
+                handling_fee = (handling_fee or 0.0) + (item.total_price or 0.0)
+            else:
+                filtered.append(item)
+        items = filtered
+
+        # Extract SWIM invoice handling fee if not yet set:
+        # Merged PDFs have a Swiggy handling page with "Invoice Total X.XX" (distinct from
+        # seller page's "Invoice Value X.XX"). Free-handling orders show "Invoice Total 0".
+        if handling_fee is None:
+            m = re.search(r'Invoice\s+Total\s+([\d.]+)', text, re.IGNORECASE)
+            if m:
+                swim_total = _to_float(m.group(1))
+                if swim_total and swim_total > 0:
+                    handling_fee = swim_total
+
+        # Single-page Instamart invoices show "Handling Fee (Inclusive of GST) X.XX"
+        if handling_fee is None:
+            m = re.search(
+                r'Handling\s+Fee\s*\(Inclusive\s+of\s+GST\)\s+([\d.]+)',
+                text, re.IGNORECASE,
+            )
+            if m:
+                handling_fee = _to_float(m.group(1))
+
+        # Correct total_amount: seller "Invoice Value" is goods only — add handling on top
+        if total_amount is not None and handling_fee:
+            total_amount += handling_fee
 
     data = ExtractedBillData(
         platform=platform,

@@ -105,6 +105,44 @@ async function _getHsnCategories(): Promise<Record<string, string>> {
     return _hsnCache ?? {};
 }
 
+const _GPT_HSN_PROMPT = `You are an Indian GST/HSN code classification expert.
+Given an 8-digit (or shorter) HSN/SAC code, return the product or service category name.
+
+Rules:
+- Return a short, clear category name in English (e.g. "Dairy & Eggs", "Beverages", "Personal Care", "Handling Fee")
+- Use Indian grocery/retail terminology
+- If the code is a SAC (service) code like 999799, describe the service type
+- If you don't recognise the code, return null
+
+Return ONLY valid JSON with no markdown: {"category": "Category Name"} or {"category": null}`;
+
+/**
+ * Ask GPT-4.1-mini for the category of an unknown HSN/SAC code.
+ * ~$0.000003 per call. Registers the result in DB for future lookups.
+ */
+async function _askGptForHsn(hsnCode: string): Promise<string | null> {
+    if (!OPENAI_API_KEY) return null;
+    try {
+        const response = await _getOpenAI().chat.completions.create({
+            model: 'gpt-4.1-mini',
+            messages: [
+                { role: 'system', content: _GPT_HSN_PROMPT },
+                { role: 'user', content: hsnCode },
+            ],
+            max_tokens: 20,
+            temperature: 0,
+            response_format: { type: 'json_object' },
+        });
+        const raw = response.choices[0]?.message?.content ?? '{}';
+        const parsed = JSON.parse(raw) as { category?: string | null };
+        const category = parsed.category && typeof parsed.category === 'string' ? parsed.category.trim() : null;
+        return category || null;
+    } catch (error) {
+        logger.warn(`GPT HSN lookup failed for "${hsnCode}"`, error);
+        return null;
+    }
+}
+
 const _GPT_BRAND_PROMPT = `You are a brand name extractor for Indian grocery and food delivery products.
 Given a product name, identify and return the brand name.
 
@@ -170,7 +208,19 @@ async function _extractCategory(hsnCode: string | null): Promise<string | null> 
     const hsn = hsnCode.replace(/\s/g, '');
     const map = await _getHsnCategories();
     // Try 6-digit, 4-digit, then 2-digit chapter fallback
-    return map[hsn.slice(0, 6)] ?? map[hsn.slice(0, 4)] ?? map[hsn.slice(0, 2)] ?? null;
+    const fromDb = map[hsn.slice(0, 6)] ?? map[hsn.slice(0, 4)] ?? map[hsn.slice(0, 2)] ?? null;
+    if (fromDb) return fromDb;
+
+    // GPT fallback — only called for genuinely unknown HSN codes
+    const gptCategory = await _askGptForHsn(hsn);
+    if (gptCategory) {
+        // Register at the most specific key we have (up to 6 digits)
+        const key = hsn.length >= 6 ? hsn.slice(0, 6) : hsn;
+        await BrandRepository.insertHsnCategory(key, gptCategory);
+        _hsnCache = null;   // invalidate so next call picks up new entry
+        logger.info(`GPT discovered new HSN category: "${gptCategory}" for code "${hsn}"`);
+    }
+    return gptCategory;
 }
 
 /**

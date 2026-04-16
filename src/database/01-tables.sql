@@ -394,7 +394,16 @@ INSERT IGNORE INTO brands (name, source) VALUES
 ('Licious', 'seed'), ('FreshToHome', 'seed'), ('Zappfresh', 'seed'),
 ('TenderCuts', 'seed'), ('Nandu\'s', 'seed'), ('Nandus', 'seed'),
 ('Kegg Farms', 'seed'), ('Country Delight Eggs', 'seed'),
-('Bagrry\'s Eggs', 'seed'), ('Eggoz', 'seed');
+('Bagrry\'s Eggs', 'seed'), ('Eggoz', 'seed'),
+-- ── BB Now & Swiggy Instamart brands ─────────────────────────────────────────
+-- Brands discovered from BB Now (BigBasket Now) invoices
+('Go Zero', 'seed'),     -- premium ice cream brand (seen in BB Now bills)
+('Crax', 'seed'),        -- Bikanervala snacks (Crax Masala Punch Chips)
+-- Brands discovered from Swiggy Instamart invoices
+('Laxmipati', 'seed'),   -- regional flour/grain brand (Laxmipati Rice Poha)
+('Talod', 'seed'),       -- regional Gujarat snack brand (Talod Dalwada Flour)
+('NOICE', 'seed'),       -- packaged snack brand (NOICE Salted Potato Wafers)
+('Dr Trust', 'seed');    -- healthcare/medical devices brand (Dr Trust Orthopaedic Heat Belt)
 
 -- ── HSN Category dictionary ───────────────────────────────────────────────────
 -- Maps HSN chapter (2-digit) and sub-chapter (4-digit) to human-readable category.
@@ -522,4 +531,9 @@ INSERT IGNORE INTO hsn_categories (chapter, category) VALUES
 ('9988', 'Manufacturing Services'),
 ('998549', 'Platform Handling / Bag Charge'),
 ('996819', 'Platform Surge Charge'),
-('996813', 'Platform Delivery Charge');
+('996813', 'Platform Delivery Charge'),
+-- Chapter 90 — Medical & Orthopaedic Devices (seen on Swiggy Instamart health product bills)
+('90', 'Medical & Orthopaedic Devices'),
+('9021', 'Orthopaedic & Prosthetic Appliances'),
+-- Miscellaneous service codes seen on Swiggy Instamart invoices
+('999799', 'Other Miscellaneous Services');

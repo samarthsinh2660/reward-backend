@@ -7,8 +7,16 @@ export const BILL_TABLE = 'bills';
 export const BILL_STATUSES = ['queued', 'pending', 'processing', 'verified', 'rejected', 'failed'] as const;
 export type BillStatus = typeof BILL_STATUSES[number];
 
-// Supported platforms — used for reward eligibility checks
-export const SUPPORTED_PLATFORMS = ['swiggy', 'zomato', 'zepto', 'blinkit'] as const;
+// Supported platforms — used for reward eligibility checks.
+// Keep in sync with ALLOWED_PLATFORMS in backend/bill-processor/config.py and 01-tables.sql comment.
+export const SUPPORTED_PLATFORMS = [
+    'swiggy',
+    'zomato',
+    'zepto',
+    'blinkit',
+    'bbnow',     // BB Now (BigBasket Now) — Innovative Retail Concepts Pvt Ltd
+    'instamart', // Swiggy Instamart — grocery arm, distinct invoice format from Swiggy food
+] as const;
 export type SupportedPlatform = typeof SUPPORTED_PLATFORMS[number];
 
 // platform stored in DB is a free string — any detected name or "unknown"

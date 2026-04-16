@@ -223,6 +223,19 @@ export async function processBillInBackground(
         logger.info(`Bill ${billId} — platform consistency penalty: +${platformPenalty}`);
     }
 
+    // 4. BB Now order ID format check
+    // BB Now order IDs always match BNN-XXXXXXXXXX-YYYYMMDD — anything else is suspicious
+    if (extracted_data.platform === 'bbnow' && extracted_data.order_id) {
+        // Normalize whitespace — PDF line-wrapping can insert a space before the date segment
+        const normalizedOrderId = extracted_data.order_id.replace(/\s+/g, '');
+        const BB_ORDER_RE = /^BNN-\d{10}-\d{8}$/;
+        if (!BB_ORDER_RE.test(normalizedOrderId)) {
+            fraudScore += 15;
+            nodeFraudReasons.push(`bbnow_order_id_format_invalid:${normalizedOrderId}`);
+            logger.info(`Bill ${billId} — BB Now order ID format invalid: ${normalizedOrderId}`);
+        }
+    }
+
     // Merge node-side reasons into fraud_signals for admin visibility
     const finalFraudSignals = nodeFraudReasons.length > 0
         ? { ...fraud_signals, node_rule_violations: nodeFraudReasons }

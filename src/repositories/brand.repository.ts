@@ -44,6 +44,22 @@ class BrandRepositoryImpl {
     }
 
     /**
+     * Insert a GPT-discovered HSN category. INSERT IGNORE so concurrent calls are safe.
+     */
+    async insertHsnCategory(chapter: string, category: string): Promise<Result<void, RequestError>> {
+        try {
+            await db.execute(
+                'INSERT IGNORE INTO hsn_categories (chapter, category) VALUES (?, ?)',
+                [chapter, category],
+            );
+            return ok(undefined);
+        } catch (error) {
+            logger.error('BrandRepository.insertHsnCategory failed', error);
+            return err(ERRORS.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    /**
      * Returns all HSN category mappings as a record keyed by chapter string.
      */
     async findAllHsnCategories(): Promise<Result<Record<string, string>, RequestError>> {
