@@ -375,6 +375,8 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
     # ── Merchant name ─────────────────────────────────────────────────────────
     merchant_name = None
     for pat in [
+        # BB Now: supplier is always Innovative Retail Concepts Pvt Ltd
+        r'(Innovative\s+Retail\s+Concepts\s+Pvt\.?\s*Ltd\.?)',
         # Blinkit: "Sold By / Seller\n<name>" or "Sold By\n<name>"
         r'Sold\s*By\s*[/\\]?\s*Seller\s*\n\s*(.+?)(?:\n|GSTIN|FSSAI)',
         r'Sold\s*By\s*\n\s*(.+?)(?:\n|GSTIN|FSSAI)',
@@ -387,6 +389,9 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
         if m:
             merchant_name = m.group(1).strip()
             break
+    # BB Now fallback: supplier name isn't always printed — use platform label
+    if not merchant_name and platform == 'bbnow':
+        merchant_name = 'Innovative Retail Concepts Pvt Ltd'
 
     # ── Total amount ──────────────────────────────────────────────────────────
     total_amount = None
@@ -518,14 +523,19 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
     # ── Customer name (Bill To / Ship To) ─────────────────────────────────────
     customer_name = None
     for pat in [
-        r'Bill\s*To\s*[:\-]?\s*\n?\s*(.+?)(?:\n|GSTIN|Address|$)',
-        r'Ship\s*To\s*[:\-]?\s*\n?\s*(.+?)(?:\n|GSTIN|Address|$)',
+        # BB Now: "Bill to/Ship to:\n<name>" — name is on the line after the label
+        r'Bill\s*to\s*/\s*Ship\s*to\s*:\s*\n\s*(.+?)(?:\n|GSTIN|Address|$)',
+        r'Bill\s*To\s*[:\-]?\s*\n\s*(.+?)(?:\n|GSTIN|Address|$)',
+        r'Ship\s*To\s*[:\-]?\s*\n\s*(.+?)(?:\n|GSTIN|Address|$)',
         r'Billing\s*(?:Name|Address)\s*[:\-]?\s*(.+?)(?:\n|$)',
     ]:
-        m = re.search(pat, text, re.IGNORECASE)
+        m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
         if m:
-            customer_name = m.group(1).strip()
-            break
+            val = m.group(1).strip()
+            # Reject if we captured the label itself or it's too short
+            if val and len(val) > 2 and 'ship to' not in val.lower() and 'bill to' not in val.lower():
+                customer_name = val
+                break
 
     # ── Delivery address fields ───────────────────────────────────────────────
     delivery_area     = None
@@ -674,9 +684,9 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
     # Strategy 1 fails here because HSN immediately follows the item name (no float before it).
     if not items and platform == "bbnow":
         for m in re.finditer(
-            r'(?m)^(\d{1,2})\s+'     # SR no (1-2 digits) — anchored to line start to avoid matching CGST values mid-row
-            r'(.+?)\s+'              # item name (non-greedy — stops at first 8-digit HSN)
-            r'(\d{8})\s+'            # HSN code (exactly 8 digits — very distinctive)
+            r'(?m)^(\d{1,2})\s+'     # SR no anchored to line start (prevents matching CGST values mid-row)
+            r'(.+?)'                 # item name (non-greedy, DOTALL so spans multi-line names)
+            r'(\d{8})\s+'            # HSN code (exactly 8 digits — anchors end of item name)
             r'(\d+)\s+'              # Qty
             r'([\d.]+)\s+'           # Unit Price
             r'[\d.]+\s+'             # Unit Taxable Value (skip)
@@ -685,7 +695,7 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
             r'[\d.]+\s+'             # Other Charges (skip)
             r'([\d.]+)\s+'           # Net Taxable Value ← total_price
             r'[\d.]+%',              # CGST% — confirms this is a real item row
-            text, re.MULTILINE,
+            text, re.MULTILINE | re.DOTALL,
         ):
             name = re.sub(r'\s+', ' ', m.group(2)).strip()
             if not name or len(name) < 2:

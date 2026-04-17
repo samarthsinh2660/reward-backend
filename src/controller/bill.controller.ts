@@ -78,6 +78,10 @@ export const acceptBill = async (
     file: Express.Multer.File
 ): Promise<Result<BillUploadResponse, RequestError>> => {
 
+    // 0. Verify user exists — token can be valid but user may have been wiped from DB
+    const userCheck = await UserRepository.findById(userId);
+    if (userCheck.isErr()) return err(userCheck.error);  // USER_NOT_FOUND (404) surfaces to client
+
     // 1. Check upload limits before any external call
     const limitsResult = await RewardConfigRepository.getUploadLimits();
     if (limitsResult.isErr()) return err(limitsResult.error);
@@ -99,14 +103,37 @@ export const acceptBill = async (
 
     const dupCheck = await BillRepository.findBySha256Hash(sha256Hash);
     if (dupCheck.isErr()) return err(dupCheck.error);
-    if (dupCheck.value) return err(ERRORS.BILL_DUPLICATE);
+    if (dupCheck.value) {
+        const existing = dupCheck.value;
+        // If already verified/pending — true duplicate, block it
+        if (existing.status === 'verified' || existing.status === 'pending') {
+            return err(ERRORS.BILL_DUPLICATE);
+        }
+        // If stuck in queued/processing — re-trigger background processing and return existing bill
+        if (existing.status === 'queued' || existing.status === 'processing') {
+            processBillInBackground(existing.id, userId, file.buffer, file.mimetype, file.originalname);
+            return ok({
+                bill_id: existing.id,
+                status: existing.status,
+                platform: null,
+                total_amount: null,
+            });
+        }
+    }
 
     // 3. Create bill row with status='queued' — background worker fills in the rest
     const queuedBill = await BillRepository.createQueued({ user_id: userId, sha256_hash: sha256Hash });
     if (queuedBill.isErr()) {
         // Race-safe duplicate fallback (DB unique collision between pre-check and insert)
         const raceDup = await BillRepository.findBySha256Hash(sha256Hash);
-        if (raceDup.isOk() && raceDup.value) return err(ERRORS.BILL_DUPLICATE);
+        if (raceDup.isOk() && raceDup.value) {
+            const raceExisting = raceDup.value;
+            if (raceExisting.status === 'queued' || raceExisting.status === 'processing') {
+                processBillInBackground(raceExisting.id, userId, file.buffer, file.mimetype, file.originalname);
+                return ok({ bill_id: raceExisting.id, status: raceExisting.status, platform: null, total_amount: null });
+            }
+            return err(ERRORS.BILL_DUPLICATE);
+        }
         return err(queuedBill.error);
     }
 

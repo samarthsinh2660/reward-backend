@@ -39,7 +39,8 @@ class BillRepositoryImpl implements IBillRepository {
                 [data.user_id, data.sha256_hash]
             );
             return await this.findByIdRequired(result.insertId);
-        } catch (error) {
+        } catch (error: any) {
+            if (error?.code === 'ER_DUP_ENTRY') return err(ERRORS.BILL_DUPLICATE);
             logger.error('Error creating queued bill', error);
             return err(ERRORS.DATABASE_ERROR);
         }

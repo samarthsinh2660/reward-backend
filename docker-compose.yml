@@ -59,6 +59,9 @@ services:
       dockerfile: Dockerfile
     container_name: billpay-backend
     restart: on-failure
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     logging:
       driver: "json-file"
       options:
