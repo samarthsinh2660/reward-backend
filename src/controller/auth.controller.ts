@@ -3,6 +3,8 @@ import { err, ok, Result } from 'neverthrow';
 import { ERRORS, RequestError } from '../utils/error.ts';
 import { UserRepository } from '../repositories/user.repository.ts';
 import { UserView, OnboardUserData, toUserView } from '../models/user.model.ts';
+import { RewardConfigRepository } from '../repositories/reward_config.repository.ts';
+import { drawReward } from './reward.controller.ts';
 import { createAuthToken, createRefreshToken, decodeRefreshToken, TokenData } from '../utils/jwt.ts';
 import { LoginResponse } from '../types/login.ts';
 import { createLogger } from '../utils/logger.ts';
@@ -12,8 +14,6 @@ import { OTP_EXPIRY_SECONDS, OTP_MAX_ATTEMPTS, NODE_ENV } from '../config/env.ts
 import { OtpEntry, SendOtpResponse, RefreshTokenResponse } from '../models/auth.model.ts';
 
 const logger = createLogger('@auth.controller');
-
-const REFERRAL_COINS = 50;
 
 // ── In-memory OTP store (keyed by lowercase email) ───────────────────────────
 const otpStore = new Map<string, OtpEntry>();
@@ -105,10 +105,12 @@ export const verifyOtpDirect = async (
 
 // ─── POST /api/auth/onboard ───────────────────────────────────────────────────
 
+export type OnboardResponse = UserView & { referral_coins_earned: number };
+
 export const onboardUser = async (
     userId: number,
     data: OnboardUserData
-): Promise<Result<UserView, RequestError>> => {
+): Promise<Result<OnboardResponse, RequestError>> => {
     const existing = await UserRepository.findById(userId);
     if (existing.isErr()) return err(existing.error);
 
@@ -129,15 +131,42 @@ export const onboardUser = async (
     const updated = await UserRepository.onboard(userId, data, referralCode);
     if (updated.isErr()) return err(updated.error);
 
+    let referralCoinsEarned = 0;
     if (referrerId) {
-        const coinResult = await UserRepository.addCoins(referrerId, REFERRAL_COINS);
-        if (coinResult.isErr()) {
-            logger.error(`Failed to award referral coins to user ${referrerId}`);
+        // Pick coin amount from admin-configured reward tiers (same engine as bill uploads)
+        const tiersResult = await RewardConfigRepository.getActiveTiers();
+        let coinsToAward = 0;
+
+        if (tiersResult.isOk() && tiersResult.value.length > 0) {
+            // pityCounter=0 for referrals (no pity system here), pityCap=0 disables pity
+            const draw = drawReward(tiersResult.value, 0, Number.MAX_SAFE_INTEGER);
+            coinsToAward = draw.coin_amount;
+        } else {
+            // Fallback: use coin_min of the lowest active tier, or 10 if none configured
+            logger.warn('No active reward tiers found for referral draw — using fallback 10 coins');
+            coinsToAward = 10;
+        }
+
+        const referrerResult = await UserRepository.addCoins(referrerId, coinsToAward);
+        if (referrerResult.isErr()) {
+            logger.error(`Failed to award referral coins to referrer ${referrerId}`);
+        }
+
+        const newUserResult = await UserRepository.addCoins(userId, coinsToAward);
+        if (newUserResult.isErr()) {
+            logger.error(`Failed to award referral coins to new user ${userId}`);
+        } else {
+            referralCoinsEarned = coinsToAward;
+        }
+
+        const insertResult = await UserRepository.insertReferralTransaction(referrerId, userId, coinsToAward);
+        if (insertResult.isErr()) {
+            logger.error(`Failed to log referral transaction for referrer=${referrerId} referred=${userId}`);
         }
     }
 
     logger.info(`User ${userId} onboarded successfully`);
-    return ok(toUserView(updated.value));
+    return ok({ ...toUserView(updated.value), referral_coins_earned: referralCoinsEarned });
 };
 
 // ─── GET /api/auth/me ─────────────────────────────────────────────────────────

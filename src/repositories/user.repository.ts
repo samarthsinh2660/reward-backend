@@ -13,6 +13,7 @@ import {
 } from '../models/user.model.ts';
 import { BILL_TABLE } from '../models/bill.model.ts';
 import { CASHBACK_TRANSACTIONS_TABLE } from '../models/cashback_transaction.model.ts';
+import { REFERRAL_TRANSACTIONS_TABLE } from '../models/referral_transaction.model.ts';
 
 const logger = createLogger('@user.repository');
 
@@ -35,6 +36,7 @@ export interface IUserRepository {
     addCoins(id: number, coins: number): Promise<Result<void, RequestError>>;
     incrementPityCounter(id: number): Promise<Result<void, RequestError>>;
     resetPityCounter(id: number): Promise<Result<void, RequestError>>;
+    insertReferralTransaction(referrerId: number, referredId: number, coinsAwarded: number): Promise<Result<void, RequestError>>;
 }
 
 class UserRepositoryImpl implements IUserRepository {
@@ -259,6 +261,23 @@ class UserRepositoryImpl implements IUserRepository {
             return ok(undefined);
         } catch (error) {
             logger.error('Error resetting pity counter', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async insertReferralTransaction(
+        referrerId: number,
+        referredId: number,
+        coinsAwarded: number
+    ): Promise<Result<void, RequestError>> {
+        try {
+            await db.query<ResultSetHeader>(
+                `INSERT INTO ${REFERRAL_TRANSACTIONS_TABLE} (referrer_user_id, referred_user_id, coins_awarded) VALUES (?, ?, ?)`,
+                [referrerId, referredId, coinsAwarded]
+            );
+            return ok(undefined);
+        } catch (error) {
+            logger.error('Error inserting referral transaction', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }
