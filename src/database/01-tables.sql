@@ -113,6 +113,13 @@ CREATE TABLE IF NOT EXISTS reward_config (
   updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+-- Default reward tiers (admin can edit/add more, but these are the starting defaults)
+INSERT IGNORE INTO reward_config (id, tier_name, reward_min, reward_max, coin_min, coin_max, weight, is_active) VALUES
+(1, 'base',    2.00,  10.00, 110, 125, 70, TRUE),
+(2, 'medium', 11.00,  30.00, 126, 170, 20, TRUE),
+(3, 'high',   31.00,  60.00, 171, 240,  8, TRUE),
+(4, 'jackpot',61.00,  80.00, 241, 320,  2, TRUE);
+
 CREATE TABLE IF NOT EXISTS upload_limits (
   id           INT AUTO_INCREMENT PRIMARY KEY,
   daily_limit  INT NOT NULL DEFAULT 3,
@@ -122,12 +129,18 @@ CREATE TABLE IF NOT EXISTS upload_limits (
   updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+INSERT IGNORE INTO upload_limits (id, daily_limit, weekly_limit, monthly_limit, pity_cap) VALUES
+(1, 3, 10, 30, 15);
+
 CREATE TABLE IF NOT EXISTS referral_config (
   id         INT AUTO_INCREMENT PRIMARY KEY,
   coins_min  INT NOT NULL DEFAULT 10,                  -- min coins awarded per referral
   coins_max  INT NOT NULL DEFAULT 50,                  -- max coins awarded per referral
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
+
+INSERT IGNORE INTO referral_config (id, coins_min, coins_max) VALUES
+(1, 10, 50);
 
 CREATE TABLE IF NOT EXISTS banners (
   id            INT AUTO_INCREMENT PRIMARY KEY,

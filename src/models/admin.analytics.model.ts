@@ -358,3 +358,4 @@ export type ReportsSummaryView = {
     };
     active_users_7d: number;
 };
+

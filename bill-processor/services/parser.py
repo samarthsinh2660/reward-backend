@@ -96,6 +96,7 @@ Swiggy Instamart-specific rules (apply when platform is instamart):
 BB Now-specific rules (apply when platform is bbnow):
 - total_amount is the "Total Invoice value (In Figure)" line — NOT "Final Total" (which is the payment settlement breakdown, not the invoice value).
 - Order IDs match the format BNN-XXXXXXXXXX-YYYYMMDD. PDF line wrapping may insert a space before the date part — normalize by removing the space.
+- merchant_name must ALWAYS be "BigBasket Now" for bbnow bills, regardless of what other text appears (e.g. "Wallet on delivery" is a payment method, NOT the merchant).
 """
 
 
@@ -389,9 +390,10 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
         if m:
             merchant_name = m.group(1).strip()
             break
-    # BB Now fallback: supplier name isn't always printed — use platform label
-    if not merchant_name and platform == 'bbnow':
-        merchant_name = 'Innovative Retail Concepts Pvt Ltd'
+    # BB Now: merchant is always Innovative Retail Concepts — override anything else extracted
+    # (OCR can pick up "Wallet on delivery" payment method text as merchant name)
+    if platform == 'bbnow':
+        merchant_name = 'BigBasket Now'
 
     # ── Total amount ──────────────────────────────────────────────────────────
     total_amount = None
@@ -747,6 +749,15 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
                 unit_price=unit_price,
                 total_price=total_price,
             ))
+
+    # ── Post-extraction: filter out table header rows captured by regex ──────────
+    # Some PDFs have repeated or OCR-garbled header rows ("SR No", "SI No", "Item Description")
+    # that satisfy the digit-prefix pattern and end up in items[]. Strip them.
+    _HEADER_MARKERS = re.compile(
+        r'^(?:sr\.?\s*no|si\.?\s*no|s\.?no|item\s+desc|description|product\s+name)',
+        re.IGNORECASE,
+    )
+    items = [it for it in items if it.name and not _HEADER_MARKERS.match(it.name.strip())]
 
     # Instamart post-processing:
     # 1. Remove any 999799 items (Swiggy handling fee service code) that may have slipped

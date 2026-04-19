@@ -1,4 +1,5 @@
 import { err, ok, Result } from 'neverthrow';
+import { RowDataPacket } from 'mysql2';
 import { db } from '../database/db.ts';
 import {
     AdminAnalyticsDashboardView,
@@ -34,6 +35,20 @@ import {
     FraudStatsView,
     ReportsSummaryView,
 } from '../models/admin.analytics.model.ts';
+
+export interface IAdminAnalyticsRepository {
+    getDashboard(filters: AnalyticsFilters): Promise<Result<AdminAnalyticsDashboardView, RequestError>>;
+    getCompanyDistribution(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<CompanyDistributionRow>, RequestError>>;
+    getBrandDistribution(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<BrandDistributionRow>, RequestError>>;
+    getProductDistribution(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<ProductDistributionRow>, RequestError>>;
+    getGeographyDistribution(filters: GeographyDistributionFilters): Promise<Result<AnalyticsListResponse<GeographyDistributionRow>, RequestError>>;
+    getItemScans(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<ItemScanRow>, RequestError>>;
+    getCompanyProducts(companyId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
+    getBrandProducts(brandId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
+    getProductCompanies(productId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
+    getFraudStats(): Promise<Result<FraudStatsView, RequestError>>;
+    getReportsSummary(): Promise<Result<ReportsSummaryView, RequestError>>;
+}
 import { BillStatus } from '../models/bill.model.ts';
 import {
     buildRegionCaseExpression,
@@ -296,20 +311,6 @@ function buildAnalyticsList<T>(filters: AnalyticsFilters, rows: T[], pagination:
         rows,
         pagination,
     };
-}
-
-export interface IAdminAnalyticsRepository {
-    getDashboard(filters: AnalyticsFilters): Promise<Result<AdminAnalyticsDashboardView, RequestError>>;
-    getCompanyDistribution(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<CompanyDistributionRow>, RequestError>>;
-    getBrandDistribution(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<BrandDistributionRow>, RequestError>>;
-    getProductDistribution(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<ProductDistributionRow>, RequestError>>;
-    getGeographyDistribution(filters: GeographyDistributionFilters): Promise<Result<AnalyticsListResponse<GeographyDistributionRow>, RequestError>>;
-    getItemScans(filters: AnalyticsFilters): Promise<Result<AnalyticsListResponse<ItemScanRow>, RequestError>>;
-    getCompanyProducts(companyId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
-    getBrandProducts(brandId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
-    getProductCompanies(productId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
-    getFraudStats(): Promise<Result<FraudStatsView, RequestError>>;
-    getReportsSummary(): Promise<Result<ReportsSummaryView, RequestError>>;
 }
 
 class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
@@ -869,7 +870,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
         }
     }
 
-    private async runPagedQuery<T>(
+    private async runPagedQuery<T extends RowDataPacket>(
         baseQuery: string,
         params: SqlParam[],
         filters: AnalyticsFilters,
