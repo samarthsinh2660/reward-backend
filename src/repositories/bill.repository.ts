@@ -384,11 +384,14 @@ class BillRepositoryImpl implements IBillRepository {
             const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
             params.push(limit);
 
-            const [rows] = await db.query<Bill[]>(
-                `SELECT * FROM ${BILL_TABLE} ${where} ORDER BY id DESC LIMIT ?`,
+            const [rows] = await db.query<(Bill & { user_name: string | null; user_email: string | null })[]>(
+                `SELECT b.*, u.name AS user_name, u.email AS user_email
+                 FROM ${BILL_TABLE} b
+                 LEFT JOIN users u ON u.id = b.user_id
+                 ${where} ORDER BY b.id DESC LIMIT ?`,
                 params
             );
-            return ok(rows);
+            return ok(rows as Bill[]);
         } catch (error) {
             logger.error('Error listing bills (admin)', error);
             return err(ERRORS.DATABASE_ERROR);

@@ -21,6 +21,8 @@ import {
     getItemScans,
     getProductCompanies,
     getProductDistribution,
+    getFraudStats,
+    getReportsSummary,
 } from '../controller/admin.analytics.controller.ts';
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -234,6 +236,30 @@ adminAnalyticsRouter.get(
         const result = await getProductCompanies(params.id, filters);
         result.match(
             (data) => res.json(successResponse(data, 'Product companies fetched')),
+            (error) => next(error)
+        );
+    }
+);
+
+// GET /api/admin/analytics/fraud-stats
+adminAnalyticsRouter.get(
+    '/fraud-stats',
+    async function (_req: Request, res: Response, next: NextFunction) {
+        const result = await getFraudStats();
+        result.match(
+            (data) => res.json(successResponse(data, 'Fraud stats fetched')),
+            (error) => next(error)
+        );
+    }
+);
+
+// GET /api/admin/analytics/reports-summary
+adminAnalyticsRouter.get(
+    '/reports-summary',
+    async function (_req: Request, res: Response, next: NextFunction) {
+        const result = await getReportsSummary();
+        result.match(
+            (data) => res.json(successResponse(data, 'Reports summary fetched')),
             (error) => next(error)
         );
     }

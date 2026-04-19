@@ -31,6 +31,14 @@ const SCHEMA = {
         pity_cap:      z.number().int().min(1).optional(),
     }),
 
+    UPDATE_REFERRAL_CONFIG: z.object({
+        coins_min: z.number().int().min(1).optional(),
+        coins_max: z.number().int().min(1).optional(),
+    }).refine(
+        (d) => d.coins_min === undefined || d.coins_max === undefined || d.coins_min < d.coins_max,
+        { message: 'coins_min must be less than coins_max' }
+    ),
+
     TIER_ID: z.object({
         id: z.coerce.number().int().min(1),
     }),
@@ -103,6 +111,32 @@ adminRewardRouter.put(
         const result = await RewardConfigRepository.updateUploadLimits(body);
         result.match(
             (data) => res.json(successResponse(data, 'Upload limits updated')),
+            (error) => next(error)
+        );
+    }
+);
+
+// ─── GET /api/admin/referral-config ──────────────────────────────────────────
+adminRewardRouter.get(
+    '/referral-config',
+    async function (_req: Request, res: Response, next: NextFunction) {
+        const result = await RewardConfigRepository.getReferralConfig();
+        result.match(
+            (data) => res.json(successResponse(data, 'Referral config fetched')),
+            (error) => next(error)
+        );
+    }
+);
+
+// ─── PUT /api/admin/referral-config ──────────────────────────────────────────
+adminRewardRouter.put(
+    '/referral-config',
+    validateRequest({ body: SCHEMA.UPDATE_REFERRAL_CONFIG }),
+    async function (req: Request, res: Response, next: NextFunction) {
+        const body = SCHEMA.UPDATE_REFERRAL_CONFIG.parse(req.body);
+        const result = await RewardConfigRepository.updateReferralConfig(body);
+        result.match(
+            (data) => res.json(successResponse(data, 'Referral config updated')),
             (error) => next(error)
         );
     }

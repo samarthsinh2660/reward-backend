@@ -1,7 +1,8 @@
 import { RowDataPacket } from 'mysql2';
 
-export const REWARD_CONFIG_TABLE  = 'reward_config';
-export const UPLOAD_LIMITS_TABLE  = 'upload_limits';
+export const REWARD_CONFIG_TABLE   = 'reward_config';
+export const UPLOAD_LIMITS_TABLE   = 'upload_limits';
+export const REFERRAL_CONFIG_TABLE = 'referral_config';
 
 // ── Enum constants ────────────────────────────────────────────────────────────
 
@@ -76,6 +77,18 @@ export type UpdateUploadLimitsData = {
     weekly_limit?: number;
     monthly_limit?: number;
     pity_cap?: number;
+};
+
+export interface ReferralConfig extends RowDataPacket {
+    id: number;
+    coins_min: number;
+    coins_max: number;
+    updated_at: Date;
+}
+
+export type UpdateReferralConfigData = {
+    coins_min?: number;
+    coins_max?: number;
 };
 
 // ── Response type — what the reward engine returns after a draw ───────────────

@@ -4,7 +4,6 @@ import { ERRORS, RequestError } from '../utils/error.ts';
 import { UserRepository } from '../repositories/user.repository.ts';
 import { UserView, OnboardUserData, toUserView } from '../models/user.model.ts';
 import { RewardConfigRepository } from '../repositories/reward_config.repository.ts';
-import { drawReward } from './reward.controller.ts';
 import { createAuthToken, createRefreshToken, decodeRefreshToken, TokenData } from '../utils/jwt.ts';
 import { LoginResponse } from '../types/login.ts';
 import { createLogger } from '../utils/logger.ts';
@@ -133,18 +132,15 @@ export const onboardUser = async (
 
     let referralCoinsEarned = 0;
     if (referrerId) {
-        // Pick coin amount from admin-configured reward tiers (same engine as bill uploads)
-        const tiersResult = await RewardConfigRepository.getActiveTiers();
-        let coinsToAward = 0;
+        // Pick coin amount from admin-configured referral_config range
+        const referralConfigResult = await RewardConfigRepository.getReferralConfig();
+        let coinsToAward = 10;
 
-        if (tiersResult.isOk() && tiersResult.value.length > 0) {
-            // pityCounter=0 for referrals (no pity system here), pityCap=0 disables pity
-            const draw = drawReward(tiersResult.value, 0, Number.MAX_SAFE_INTEGER);
-            coinsToAward = draw.coin_amount;
+        if (referralConfigResult.isOk()) {
+            const { coins_min, coins_max } = referralConfigResult.value;
+            coinsToAward = Math.floor(Math.random() * (coins_max - coins_min + 1)) + coins_min;
         } else {
-            // Fallback: use coin_min of the lowest active tier, or 10 if none configured
-            logger.warn('No active reward tiers found for referral draw — using fallback 10 coins');
-            coinsToAward = 10;
+            logger.warn('No referral config found — using fallback 10 coins');
         }
 
         const referrerResult = await UserRepository.addCoins(referrerId, coinsToAward);
@@ -203,6 +199,32 @@ export const loginAdmin = async (
 
     logger.info(`Admin ${user.id} logged in`);
     const userView = toUserView(user);
+    return ok({ token, refresh_token, email: userView.email, is_onboarded: userView.is_onboarded, user: userView });
+};
+
+// ─── POST /api/admin/auth/setup ──────────────────────────────────────────────
+// Open endpoint — creates an admin account.
+// Returns 409 only if the email is already registered.
+
+export const setupAdmin = async (
+    name: string,
+    email: string,
+    password: string
+): Promise<Result<LoginResponse<UserView>, RequestError>> => {
+    const existing = await UserRepository.findByEmail(email.toLowerCase());
+    if (existing.isErr()) return err(existing.error);
+    if (existing.value) return err(ERRORS.EMAIL_ALREADY_EXISTS);
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const created = await UserRepository.createAdmin(name, email, passwordHash);
+    if (created.isErr()) return err(created.error);
+
+    const tokenData: TokenData = { id: created.value.id, is_admin: true, email: created.value.email };
+    const token         = createAuthToken(tokenData);
+    const refresh_token = createRefreshToken(tokenData);
+
+    logger.info(`Admin account created for ${email} (id=${created.value.id})`);
+    const userView = toUserView(created.value);
     return ok({ token, refresh_token, email: userView.email, is_onboarded: userView.is_onboarded, user: userView });
 };
 

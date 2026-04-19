@@ -122,6 +122,13 @@ CREATE TABLE IF NOT EXISTS upload_limits (
   updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS referral_config (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  coins_min  INT NOT NULL DEFAULT 10,                  -- min coins awarded per referral
+  coins_max  INT NOT NULL DEFAULT 50,                  -- max coins awarded per referral
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS banners (
   id            INT AUTO_INCREMENT PRIMARY KEY,
   title         VARCHAR(255) NOT NULL,

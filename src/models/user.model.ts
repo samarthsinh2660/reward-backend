@@ -46,6 +46,7 @@ export type UserView = {
     upi_id: string | null;
     wallet_balance: number;
     is_onboarded: boolean;
+    is_active: boolean;
     pity_counter: number;
     referral_code: string | null;
     coin_balance: number;
@@ -106,6 +107,22 @@ export type AdminLoginData = {
     password: string;
 };
 
+// ── Admin user list row — users JOIN bills aggregate ─────────────────────────
+
+export type AdminUserRow = {
+    id: number;
+    name: string | null;
+    email: string;
+    is_active: boolean;
+    created_at: Date;
+    wallet_balance: number;
+    total_bills: number;
+    verified_bills: number;
+    rejected_bills: number;
+    total_cashback: number;
+    max_fraud_score: number;
+};
+
 export function createEmptyUserBillStatusCounts(): UserBillStatusCounts {
     return BILL_STATUSES.reduce<UserBillStatusCounts>((counts, status) => {
         counts[status] = 0;
@@ -126,6 +143,7 @@ export function toUserView(row: User): UserView {
         upi_id: row.upi_id,
         wallet_balance: Number(row.wallet_balance),
         is_onboarded: row.is_onboarded === 1,
+        is_active: row.is_active === 1,
         pity_counter: row.pity_counter,
         referral_code: row.referral_code,
         coin_balance: row.coin_balance,

@@ -321,3 +321,40 @@ export interface AdminAnalyticsDrilldownDbRow extends RowDataPacket {
     total_quantity: number | null;
     total_sales_amount: number | null;
 }
+
+// ── Fraud stats ───────────────────────────────────────────────────────────────
+
+export type FraudStatsView = {
+    total_bills:        number;
+    high_risk:          number;
+    medium_risk:        number;
+    low_risk:           number;
+    review_queue_count: number;
+    avg_high_score:     number;
+    high_pct:           number;
+    medium_pct:         number;
+    low_pct:            number;
+    safe_pct:           number;
+};
+
+// ── Reports summary ───────────────────────────────────────────────────────────
+
+export type ReportsSummaryView = {
+    bill_analytics: {
+        total_bills_uploaded: number;
+        valid_bills_count:    number;
+        invalid_bills_count:  number;
+        valid_bills_pct:      number;
+        invalid_bills_pct:    number;
+    };
+    cashback_ledger: {
+        total_credited:  number;
+        total_debited:   number;
+        net_outstanding: number;
+    };
+    referral_programme: {
+        total_referrals:     number;
+        total_coins_awarded: number;
+    };
+    active_users_7d: number;
+};

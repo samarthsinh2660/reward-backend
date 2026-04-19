@@ -9,6 +9,7 @@ import {
     UpdateProfileData,
     USER_TABLE,
     UserProfileSummaryStats,
+    AdminUserRow,
     createEmptyUserBillStatusCounts,
 } from '../models/user.model.ts';
 import { BILL_TABLE } from '../models/bill.model.ts';
@@ -37,6 +38,10 @@ export interface IUserRepository {
     incrementPityCounter(id: number): Promise<Result<void, RequestError>>;
     resetPityCounter(id: number): Promise<Result<void, RequestError>>;
     insertReferralTransaction(referrerId: number, referredId: number, coinsAwarded: number): Promise<Result<void, RequestError>>;
+    getAdminUsers(page: number, limit: number, filter: 'all' | 'active' | 'blocked'): Promise<Result<{ users: AdminUserRow[]; total: number }, RequestError>>;
+    setUserActive(id: number, isActive: boolean): Promise<Result<void, RequestError>>;
+    adminExists(): Promise<Result<boolean, RequestError>>;
+    createAdmin(name: string, email: string, passwordHash: string): Promise<Result<User, RequestError>>;
 }
 
 class UserRepositoryImpl implements IUserRepository {
@@ -278,6 +283,101 @@ class UserRepositoryImpl implements IUserRepository {
             return ok(undefined);
         } catch (error) {
             logger.error('Error inserting referral transaction', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async getAdminUsers(
+        page: number,
+        limit: number,
+        filter: 'all' | 'active' | 'blocked'
+    ): Promise<Result<{ users: AdminUserRow[]; total: number }, RequestError>> {
+        try {
+            const offset = (page - 1) * limit;
+            const whereClause =
+                filter === 'active'  ? 'WHERE u.is_active = 1' :
+                filter === 'blocked' ? 'WHERE u.is_active = 0' :
+                '';
+
+            const [rows] = await db.query<any[]>(
+                `SELECT
+                    u.id, u.name, u.email,
+                    u.is_active, u.created_at, u.wallet_balance,
+                    COUNT(b.id)                                                         AS total_bills,
+                    COALESCE(SUM(b.status = 'verified'), 0)                             AS verified_bills,
+                    COALESCE(SUM(b.status = 'rejected'), 0)                             AS rejected_bills,
+                    COALESCE(SUM(CASE WHEN b.status = 'verified' THEN b.reward_amount ELSE 0 END), 0) AS total_cashback,
+                    COALESCE(MAX(b.fraud_score), 0)                                     AS max_fraud_score
+                 FROM ${USER_TABLE} u
+                 LEFT JOIN ${BILL_TABLE} b ON b.user_id = u.id
+                 ${whereClause}
+                 GROUP BY u.id
+                 ORDER BY u.created_at DESC
+                 LIMIT ? OFFSET ?`,
+                [limit, offset]
+            );
+
+            const [[{ total }]] = await db.query<any[]>(
+                `SELECT COUNT(*) AS total FROM ${USER_TABLE} u ${whereClause}`
+            );
+
+            const users: AdminUserRow[] = rows.map((r) => ({
+                id:             Number(r.id),
+                name:           r.name ?? null,
+                email:          r.email,
+                is_active:      r.is_active === 1,
+                created_at:     r.created_at,
+                wallet_balance: Number(r.wallet_balance),
+                total_bills:    Number(r.total_bills),
+                verified_bills: Number(r.verified_bills),
+                rejected_bills: Number(r.rejected_bills),
+                total_cashback: Number(r.total_cashback),
+                max_fraud_score: Number(r.max_fraud_score),
+            }));
+
+            return ok({ users, total: Number(total) });
+        } catch (error) {
+            logger.error('Error fetching admin user list', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async setUserActive(id: number, isActive: boolean): Promise<Result<void, RequestError>> {
+        try {
+            const [result] = await db.query<ResultSetHeader>(
+                `UPDATE ${USER_TABLE} SET is_active = ? WHERE id = ?`,
+                [isActive ? 1 : 0, id]
+            );
+            if (result.affectedRows === 0) return err(ERRORS.USER_NOT_FOUND);
+            return ok(undefined);
+        } catch (error) {
+            logger.error('Error setting user active status', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async adminExists(): Promise<Result<boolean, RequestError>> {
+        try {
+            const [[{ count }]] = await db.query<any[]>(
+                `SELECT COUNT(*) AS count FROM ${USER_TABLE} WHERE role = 'admin'`
+            );
+            return ok(Number(count) > 0);
+        } catch (error) {
+            logger.error('Error checking admin existence', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async createAdmin(name: string, email: string, passwordHash: string): Promise<Result<User, RequestError>> {
+        try {
+            const [result] = await db.query<ResultSetHeader>(
+                `INSERT INTO ${USER_TABLE} (name, email, role, is_onboarded, password_hash)
+                 VALUES (?, ?, 'admin', TRUE, ?)`,
+                [name, email.toLowerCase(), passwordHash]
+            );
+            return await this.findById(result.insertId);
+        } catch (error) {
+            logger.error('Error creating admin user', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }

@@ -3,9 +3,9 @@ import { db } from '../database/db.ts';
 import { ERRORS, RequestError } from '../utils/error.ts';
 import { createLogger } from '../utils/logger.ts';
 import {
-    RewardConfig, UploadLimits,
-    UpdateRewardTierData, UpdateUploadLimitsData,
-    REWARD_CONFIG_TABLE, UPLOAD_LIMITS_TABLE,
+    RewardConfig, UploadLimits, ReferralConfig,
+    UpdateRewardTierData, UpdateUploadLimitsData, UpdateReferralConfigData,
+    REWARD_CONFIG_TABLE, UPLOAD_LIMITS_TABLE, REFERRAL_CONFIG_TABLE,
 } from '../models/reward_config.model.ts';
 
 const logger = createLogger('@reward_config.repository');
@@ -16,6 +16,8 @@ export interface IRewardConfigRepository {
     updateTier(id: number, data: UpdateRewardTierData): Promise<Result<RewardConfig, RequestError>>;
     getUploadLimits(): Promise<Result<UploadLimits, RequestError>>;
     updateUploadLimits(data: UpdateUploadLimitsData): Promise<Result<UploadLimits, RequestError>>;
+    getReferralConfig(): Promise<Result<ReferralConfig, RequestError>>;
+    updateReferralConfig(data: UpdateReferralConfigData): Promise<Result<ReferralConfig, RequestError>>;
 }
 
 class RewardConfigRepositoryImpl implements IRewardConfigRepository {
@@ -108,6 +110,40 @@ class RewardConfigRepositoryImpl implements IRewardConfigRepository {
             return await this.getUploadLimits();
         } catch (error) {
             logger.error('Error updating upload limits', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async getReferralConfig(): Promise<Result<ReferralConfig, RequestError>> {
+        try {
+            const [rows] = await db.query<ReferralConfig[]>(
+                `SELECT * FROM ${REFERRAL_CONFIG_TABLE} LIMIT 1`
+            );
+            if (rows.length === 0) return err(ERRORS.REWARD_CONFIG_NOT_FOUND);
+            return ok(rows[0]);
+        } catch (error) {
+            logger.error('Error fetching referral config', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async updateReferralConfig(data: UpdateReferralConfigData): Promise<Result<ReferralConfig, RequestError>> {
+        try {
+            const fields: string[] = [];
+            const values: number[] = [];
+
+            if (data.coins_min !== undefined) { fields.push('coins_min = ?'); values.push(data.coins_min); }
+            if (data.coins_max !== undefined) { fields.push('coins_max = ?'); values.push(data.coins_max); }
+
+            if (fields.length > 0) {
+                await db.query(
+                    `UPDATE ${REFERRAL_CONFIG_TABLE} SET ${fields.join(', ')} WHERE id = 1`,
+                    values
+                );
+            }
+            return await this.getReferralConfig();
+        } catch (error) {
+            logger.error('Error updating referral config', error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }

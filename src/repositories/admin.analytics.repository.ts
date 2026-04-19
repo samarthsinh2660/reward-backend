@@ -31,6 +31,8 @@ import {
     AdminAnalyticsTotalSalesRow,
     AdminAnalyticsUserActivityDbRow,
     UserActivityPoint,
+    FraudStatsView,
+    ReportsSummaryView,
 } from '../models/admin.analytics.model.ts';
 import { BillStatus } from '../models/bill.model.ts';
 import {
@@ -306,6 +308,8 @@ export interface IAdminAnalyticsRepository {
     getCompanyProducts(companyId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
     getBrandProducts(brandId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
     getProductCompanies(productId: number, filters: DrilldownFilters): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>>;
+    getFraudStats(): Promise<Result<FraudStatsView, RequestError>>;
+    getReportsSummary(): Promise<Result<ReportsSummaryView, RequestError>>;
 }
 
 class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
@@ -329,7 +333,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
 
             const [dailyRows] = await db.query<AdminAnalyticsDailyUploadRow[]>(
                 `SELECT
-                    DATE_FORMAT(DATE(b.created_at), '%Y-%m-%d') AS period_label,
+                    DATE(b.created_at) AS period_label,
                     COUNT(*) AS uploads_count,
                     SUM(CASE WHEN b.status = 'verified' THEN 1 ELSE 0 END) AS verified_count,
                     SUM(CASE WHEN b.status = 'rejected' THEN 1 ELSE 0 END) AS rejected_count,
@@ -387,7 +391,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
 
             const [trendRows] = await db.query<AdminAnalyticsSalesTrendDbRow[]>(
                 `SELECT
-                    DATE_FORMAT(${billDateExpr()}, '%Y-%m-%d') AS period,
+                    DATE(b.created_at) AS period,
                     COALESCE(SUM(${lineAmountExpr()}), 0) AS actual_revenue,
                     COUNT(DISTINCT b.id) AS bill_count,
                     COUNT(*) AS item_scan_count,
@@ -395,8 +399,8 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                  FROM bills b
                  ${itemsJoin()}
                  ${itemWhere}
-                 GROUP BY DATE_FORMAT(${billDateExpr()}, '%Y-%m-%d')
-                 ORDER BY period ASC
+                 GROUP BY DATE(b.created_at)
+                 ORDER BY DATE(b.created_at) ASC
                  LIMIT 30`,
                 itemParams
             );
@@ -431,7 +435,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
 
             const [userActivityRows] = await db.query<AdminAnalyticsUserActivityDbRow[]>(
                 `SELECT
-                    DATE_FORMAT(DATE(b.created_at), '%Y-%m-%d') AS period,
+                    DATE(b.created_at) AS period,
                     COUNT(DISTINCT b.user_id) AS active_users,
                     COUNT(DISTINCT b.user_id) AS uploading_users,
                     ROUND(COUNT(*) / NULLIF(COUNT(DISTINCT b.user_id), 0), 2) AS avg_uploads_per_user
@@ -505,7 +509,7 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
                 },
             });
         } catch (error) {
-            logger.error('Error fetching admin analytics dashboard', error);
+            logger.error('Error fetching admin analytics dashboard', error as Error);
             return err(ERRORS.DATABASE_ERROR);
         }
     }
@@ -879,6 +883,96 @@ class AdminAnalyticsRepositoryImpl implements IAdminAnalyticsRepository {
             [...params, filters.limit, offset]
         );
         return rows;
+    }
+
+    async getFraudStats(): Promise<Result<FraudStatsView, RequestError>> {
+        try {
+            const [[row]] = await db.query<any[]>(`
+                SELECT
+                    COUNT(*) AS total_bills,
+                    SUM(CASE WHEN fraud_score > 80  THEN 1 ELSE 0 END) AS high_risk,
+                    SUM(CASE WHEN fraud_score > 49 AND fraud_score <= 80 THEN 1 ELSE 0 END) AS medium_risk,
+                    SUM(CASE WHEN fraud_score <= 49 THEN 1 ELSE 0 END) AS low_risk,
+                    SUM(CASE WHEN status = 'pending' AND fraud_score > 0 THEN 1 ELSE 0 END) AS review_queue_count,
+                    ROUND(COALESCE(AVG(CASE WHEN fraud_score > 80 THEN fraud_score ELSE NULL END), 0)) AS avg_high_score
+                FROM bills
+            `);
+            const total  = toNumber(row.total_bills);
+            const high   = toNumber(row.high_risk);
+            const medium = toNumber(row.medium_risk);
+            const low    = toNumber(row.low_risk);
+            return ok({
+                total_bills:        total,
+                high_risk:          high,
+                medium_risk:        medium,
+                low_risk:           low,
+                review_queue_count: toNumber(row.review_queue_count),
+                avg_high_score:     toNumber(row.avg_high_score),
+                high_pct:   total > 0 ? Math.round((high   / total) * 100) : 0,
+                medium_pct: total > 0 ? Math.round((medium / total) * 100) : 0,
+                low_pct:    total > 0 ? Math.round((low    / total) * 100) : 0,
+                safe_pct:   total > 0 ? parseFloat(((total - high) / total * 100).toFixed(1)) : 0,
+            });
+        } catch (error) {
+            logger.error('Error fetching fraud stats', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
+    }
+
+    async getReportsSummary(): Promise<Result<ReportsSummaryView, RequestError>> {
+        try {
+            const [[bills]] = await db.query<any[]>(`
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(status = 'verified') AS valid_count,
+                    SUM(status = 'rejected') AS invalid_count
+                FROM bills
+            `);
+            const [[cashback]] = await db.query<any[]>(`
+                SELECT
+                    COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END), 0) AS total_credited,
+                    COALESCE(SUM(CASE WHEN type = 'debit'  THEN amount ELSE 0 END), 0) AS total_debited
+                FROM cashback_transactions
+            `);
+            const [[referral]] = await db.query<any[]>(`
+                SELECT COUNT(*) AS total_referrals, COALESCE(SUM(coins_awarded), 0) AS total_coins
+                FROM referral_transactions
+            `);
+            const [[active]] = await db.query<any[]>(`
+                SELECT COUNT(DISTINCT user_id) AS active_users
+                FROM bills
+                WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            `);
+
+            const total       = toNumber(bills.total);
+            const validCount  = toNumber(bills.valid_count);
+            const invalidCount = toNumber(bills.invalid_count);
+            const credited    = toNumber(cashback.total_credited);
+            const debited     = toNumber(cashback.total_debited);
+
+            return ok({
+                bill_analytics: {
+                    total_bills_uploaded: total,
+                    valid_bills_count:    validCount,
+                    invalid_bills_count:  invalidCount,
+                    valid_bills_pct:   total > 0 ? parseFloat((validCount   / total * 100).toFixed(1)) : 0,
+                    invalid_bills_pct: total > 0 ? parseFloat((invalidCount / total * 100).toFixed(1)) : 0,
+                },
+                cashback_ledger: {
+                    total_credited:  credited,
+                    total_debited:   debited,
+                    net_outstanding: parseFloat((credited - debited).toFixed(2)),
+                },
+                referral_programme: {
+                    total_referrals:     toNumber(referral.total_referrals),
+                    total_coins_awarded: toNumber(referral.total_coins),
+                },
+                active_users_7d: toNumber(active.active_users),
+            });
+        } catch (error) {
+            logger.error('Error fetching reports summary', error);
+            return err(ERRORS.DATABASE_ERROR);
+        }
     }
 
     private async countGroupedRows(baseQuery: string, params: SqlParam[]): Promise<number> {

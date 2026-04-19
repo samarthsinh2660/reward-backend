@@ -12,6 +12,8 @@ import billRouter from './routes/bill.route.ts';
 import adminRewardRouter from './routes/admin.reward.route.ts';
 import adminAnalyticsRouter from './routes/admin.analytics.route.ts';
 import adminBannerRouter from './routes/admin.banner.route.ts';
+import adminUserRouter from './routes/admin.user.route.ts';
+import adminTransactionsRouter from './routes/admin.transactions.route.ts';
 import userRouter from './routes/user.route.ts';
 import { createLogger } from './utils/logger.ts';
 
@@ -64,7 +66,9 @@ async function start() {
     app.use('/api/bills', billRouter);
     app.use('/api/admin', adminRewardRouter);
     app.use('/api/admin', adminBannerRouter);
+    app.use('/api/admin', adminUserRouter);
     app.use('/api/admin/analytics', adminAnalyticsRouter);
+    app.use('/api/admin/transactions', adminTransactionsRouter);
 
     // Error handlers — must be last
     app.use(notFoundHandler);

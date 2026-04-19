@@ -12,6 +12,8 @@ import {
     GeographyDistributionRow,
     ItemScanRow,
     ProductDistributionRow,
+    FraudStatsView,
+    ReportsSummaryView,
 } from '../models/admin.analytics.model.ts';
 import { AdminAnalyticsRepository } from '../repositories/admin.analytics.repository.ts';
 
@@ -70,4 +72,12 @@ export const getProductCompanies = async (
     filters: DrilldownFilters
 ): Promise<Result<AnalyticsListResponse<DrilldownRow>, RequestError>> => {
     return AdminAnalyticsRepository.getProductCompanies(productId, filters);
+};
+
+export const getFraudStats = async (): Promise<Result<FraudStatsView, RequestError>> => {
+    return AdminAnalyticsRepository.getFraudStats();
+};
+
+export const getReportsSummary = async (): Promise<Result<ReportsSummaryView, RequestError>> => {
+    return AdminAnalyticsRepository.getReportsSummary();
 };

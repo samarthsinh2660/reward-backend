@@ -239,6 +239,8 @@ export type ChestOpenResponse = {
 // Admin-only view — includes fields not exposed to regular users
 export type AdminBillView = BillView & {
     user_id: number;
+    user_name: string | null;
+    user_email: string | null;
     fraud_score: number;
     fraud_signals: object | null;
 };
@@ -249,10 +251,12 @@ export function isSupportedPlatform(platform: string | null): platform is Suppor
     return (SUPPORTED_PLATFORMS as readonly string[]).includes(platform ?? '');
 }
 
-export function toAdminBillView(row: Bill): AdminBillView {
+export function toAdminBillView(row: Bill & { user_name?: string | null; user_email?: string | null }): AdminBillView {
     return {
         ...toBillView(row),
         user_id:       row.user_id,
+        user_name:     row.user_name ?? null,
+        user_email:    row.user_email ?? null,
         fraud_score:   row.fraud_score,
         fraud_signals: row.fraud_signals ?? null,
     };
