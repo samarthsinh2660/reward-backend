@@ -14,6 +14,7 @@ export const createLogger = (label: string) => {
     });
 
     return {
+        debug: (msg: string) => instance.debug(msg),
         info: (msg: string) => instance.info(msg),
         warn: (msg: string) => instance.warn(msg),
         error: (msg: string, err?: Error | unknown) => {
