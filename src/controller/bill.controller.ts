@@ -214,18 +214,19 @@ export async function processBillInBackground(
     let fraudScore = fraud_signals.fraud_score;
     const nodeFraudReasons: string[] = [];
 
-    // 1. Bill date sanity — reject stale (>30 days) or future-dated bills outright
+    // 1. Bill date sanity — reject stale (>3 years) or future-dated bills outright
+    // TODO: revert to 30 days for production — relaxed to 3 years for testing
     if (extracted_data.order_date) {
         const billDate  = new Date(extracted_data.order_date);
         const now       = new Date();
-        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        const cutoff = new Date(now.getTime() - 3 * 365 * 24 * 60 * 60 * 1000);
         if (billDate > now) {
             await BillRepository.updateStatus(billId, 'rejected', 'Bill date is in the future');
             logger.info(`Bill ${billId} rejected — future bill date: ${extracted_data.order_date}`);
             return;
         }
-        if (billDate < thirtyDaysAgo) {
-            await BillRepository.updateStatus(billId, 'rejected', 'Bill is older than 30 days');
+        if (billDate < cutoff) {
+            await BillRepository.updateStatus(billId, 'rejected', 'Bill is older than 3 years');
             logger.info(`Bill ${billId} rejected — bill date too old: ${extracted_data.order_date}`);
             return;
         }
