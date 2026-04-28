@@ -79,11 +79,14 @@ Rules:
 - Never hallucinate. If a field is absent from the text, use null.
 
 Blinkit-specific rules (apply when platform is blinkit):
-- HSN codes are embedded inside item names as (HSN04039010) or (HSN-04039010). Extract the digit sequence as hsn_code and strip the (HSN...) tag from the item name.
-- UPC barcode numbers (10-13 digit strings before the item name) must NOT be included in the item name.
+- HSN codes are embedded inside item names as (HSN04039010) or (HSN-04039010). PDF text extraction often splits the tag across lines as "( HSN - 04039010 )" or even one-token-per-line — recognise any of these as the same HSN tag. Extract the digit sequence as hsn_code and strip the entire (HSN...) tag (including split parens, "HSN", dash, and digits) from the item name.
+- Item names themselves are also frequently split across multiple lines (e.g. "Edel\nStainless\nSteel\nSafety\nPin\n(\nPouch\n)"). Join consecutive non-numeric line fragments back into a single item name with single spaces.
+- UPC barcode numbers (10-13 digit strings before the item name, often split into 4-digit fragments like "8904\n3854\n4055\n5") must NOT be included in the item name.
+- Blinkit table column order is: SR | UPC | ItemName(HSN-xxx) | MRP | Discount | Qty | Taxable | CGST% | CGST | SGST% | SGST | Cess% | AddCess | Total. Use Total (last column) as item.total_price, MRP as unit_price, and the Qty column as quantity.
 - Service charge items with HSN 998549 (handling/bag charge), 996819 (surge charge), or 996813 (delivery charge) are platform fees — do NOT put them in items[]. Map them to handling_fee or delivery_fee instead.
 - "Delivery and other charges" rows (no HSN, dashes for UPC/MRP) should be added to delivery_fee, not items[].
 - A Blinkit order may generate two separate invoice PDFs: one for goods (seller invoice) and one for charges only (platform invoice). If the uploaded PDF contains only service charges and no goods, items[] should be [].
+- The grand total appears on a "Total" row at the bottom of the table, formatted as "Total\n<qty>\n<cgst_total>\n<sgst_total>\n<grand_total>" — use the last number on that row as total_amount, NOT any UPC fragment.
 
 Swiggy Instamart-specific rules (apply when platform is instamart):
 - Instamart PDFs are often merged: page 1 is the seller goods invoice (invoice number starts with IMSGA, from Swinsta Ent Pvt Ltd), page 2 is the Swiggy handling fee invoice (invoice starts with SWIM, from Swiggy Limited). Both belong to the same order.
@@ -404,8 +407,12 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
         r'Invoice\s*Value\s*[\r\n\s]+([\d,]+\.?\d*)',
         r'Grand\s*Total\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)',
         r'Total\s*(?:Amt\.?|Amount)\s*[:\-]?\s*(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)',
-        # Blinkit table footer: "Total  <qty>  <cgst>  <sgst>  <grand_total>"
-        r'Total\s+\d+\s+[\d.]+\s+[\d.]+\s+([\d.]+)\s*$',
+        # Blinkit table footer: "Total  <qty>  <cgst>  <sgst>  <grand_total>" — the
+        # row is always immediately followed by "Amount in Words". Anchoring on this
+        # suffix prevents accidentally matching the column-header "Total" and walking
+        # forward through the SR# + UPC fragments (which would capture e.g. 4055 from
+        # a UPC like 8904385440555 instead of the real grand total).
+        r'Total\s+\d+\s+[\d.]+\s+[\d.]+\s+([\d.]+)(?=\s*Amount\s+in\s+Words)',
     ]:
         m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
         if m:
@@ -633,9 +640,11 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
             '996813': 'delivery',   # delivery charge
         }
 
+        # pypdf may split "(HSN-96151100)" into "(\nHSN\n-\n96151100)" when extracting
+        # text from Blinkit's tabular PDF layout — \s* allows whitespace anywhere inside the tag.
         for m in re.finditer(
             r'(.+?)'                                # item name (everything before the HSN tag)
-            r'\s*\(HSN[-\s]?(\d{5,8})\)'           # (HSN04039010) or (HSN-04039010)
+            r'\s*\(\s*HSN\s*[-\s]?\s*(\d{5,8})\s*\)' # (HSN04039010), (HSN-04039010), or fragmented "( HSN - 04039010 )"
             r'[^0-9]*'                              # pipe / spaces / junk between tag and numbers
             r'([\d.]+)'                             # MRP
             r'\s+([\d.]+)'                          # Discount
@@ -649,7 +658,18 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
             qty      = _to_float(m.group(5))
             taxable  = _to_float(m.group(6))
 
-            # Strip leading sr# and UPC barcode (sequences of 8+ digits / whitespace)
+            # Non-greedy (.+?) captures everything from the previous match end (or
+            # start of text) up to this HSN tag — for the first item, that includes
+            # the entire invoice header. Find the LAST "SR#\nUPC fragments" sequence
+            # in raw_name and discard everything before it.
+            sr_upc = list(re.finditer(
+                r'(?m)^\s*\d{1,3}\s*\n(?:\s*\d+\s*\n){2,5}',
+                raw_name,
+            ))
+            if sr_upc:
+                raw_name = raw_name[sr_upc[-1].end():]
+
+            # Fallback: strip leading SR + 8+ digit/whitespace UPC chars (older format)
             name = re.sub(r'^\s*\d+\s+[\d\s]{8,}\s*', '', raw_name)
             name = re.sub(r'\s+', ' ', name).strip()
             if not name or len(name) < 2:
