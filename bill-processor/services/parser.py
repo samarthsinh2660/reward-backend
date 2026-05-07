@@ -174,6 +174,9 @@ def parse_bill_pdf(ocr_text: str) -> ParseResult:
       3. If yes (or classifier unavailable) → _parse_text_fallback() for structured extraction.
          Zepto/Swiggy/Zomato/Blinkit PDFs are machine-generated e-invoices with fixed layouts —
          regex is more reliable and free, no second OpenAI call needed.
+      4. Quality gate: if regex returned 0 items OR any item name looks like
+         garbage table data (a known failure mode on Blinkit when pypdf strips
+         "%" symbols from tax columns), retry with OpenAI to recover.
     """
     classify = classify_pdf(ocr_text)
 
@@ -189,7 +192,52 @@ def parse_bill_pdf(ocr_text: str) -> ParseResult:
     if classify.skipped:
         logger.warning("PDF classifier skipped — proceeding with regex extraction without bill verification")
 
-    return _parse_text_fallback(ocr_text)
+    fallback_result = _parse_text_fallback(ocr_text)
+
+    if _regex_items_look_suspicious(fallback_result):
+        items = fallback_result.data.items if fallback_result.data else []
+        logger.info(
+            f"Regex extracted {len(items)} item(s) but quality gate flagged suspicious "
+            "names — retrying with OpenAI to recover"
+        )
+        openai_result = parse_bill(ocr_text)
+        # Only switch to OpenAI's result if it actually came back cleaner.
+        # parse_bill falls back to _parse_text_fallback internally on API failure,
+        # which would just give us the same suspicious data back.
+        if openai_result.passed and not _regex_items_look_suspicious(openai_result):
+            return openai_result
+
+    return fallback_result
+
+
+def _regex_items_look_suspicious(result: "ParseResult") -> bool:
+    """
+    Detects when regex extraction produced no items or items whose names look
+    like raw table data (numeric/whitespace) rather than real product names.
+    Used as a trigger to retry with OpenAI.
+    """
+    if not result.passed or result.data is None:
+        return False
+    items = result.data.items or []
+    if not items:
+        return True
+    return any(_is_suspicious_item_name(item.name) for item in items)
+
+
+def _is_suspicious_item_name(name: str | None) -> bool:
+    """
+    True when name looks like leftover table column data instead of a product
+    name — empty/whitespace, very short, or dominated by digits/punctuation.
+    """
+    if not name:
+        return True
+    cleaned = name.strip()
+    if len(cleaned) < 3:
+        return True
+    alpha_count = sum(1 for c in cleaned if c.isalpha())
+    # Real product names are >50% alphabetic. Anything below that is almost
+    # always garbage tax-column data (e.g. "0.00 0.00 17.00 3 551 119 9").
+    return alpha_count / len(cleaned) < 0.5
 
 
 _MAX_RETRIES  = 3
@@ -239,18 +287,26 @@ def parse_bill(ocr_text: str) -> ParseResult:
             parsed["platform"] = platform
             is_supported_platform = platform in ALLOWED_PLATFORMS
 
-            # Build items list safely
+            # Build items list safely.
+            # Strip + min-length guard: OpenAI occasionally returns names that are
+            # whitespace-only or a single char. Those pass a plain truthy check
+            # but MySQL's TRIM/NULLIF in analytics collapses them to NULL, which
+            # surfaces as "Unknown Product" in the dashboard.
             raw_items = parsed.get("items") or []
             items = []
             for item in raw_items:
-                if isinstance(item, dict) and item.get("name"):
-                    items.append(BillItem(
-                        name=str(item["name"]),
-                        hsn_code=_to_str(item.get("hsn_code")),
-                        quantity=_to_float(item.get("quantity")),
-                        unit_price=_to_float(item.get("unit_price")),
-                        total_price=_to_float(item.get("total_price")),
-                    ))
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if len(name) < 2:
+                    continue
+                items.append(BillItem(
+                    name=name,
+                    hsn_code=_to_str(item.get("hsn_code")),
+                    quantity=_to_float(item.get("quantity")),
+                    unit_price=_to_float(item.get("unit_price")),
+                    total_price=_to_float(item.get("total_price")),
+                ))
 
             data = ExtractedBillData(
                 platform=parsed.get("platform"),
@@ -660,10 +716,19 @@ def _parse_text_fallback(ocr_text: str) -> ParseResult:
 
             # Non-greedy (.+?) captures everything from the previous match end (or
             # start of text) up to this HSN tag — for the first item, that includes
-            # the entire invoice header. Find the LAST "SR#\nUPC fragments" sequence
-            # in raw_name and discard everything before it.
+            # the entire invoice header; for items 2+, it includes the trailing
+            # tax columns of the previous row (CGST%, CGST, SGST%, SGST, Cess%,
+            # AddCess, Total). Find the LAST "SR#\nUPC fragments" sequence in
+            # raw_name and discard everything before it.
+            #
+            # The (?=\s*[A-Za-z]) lookahead requires the SR+UPC block to be
+            # followed by alphabetic text — i.e. the start of an actual product
+            # name. This prevents a false match on tax columns when pypdf strips
+            # the "%" sign from rate columns (so bare 9, 18 look like SR numbers
+            # followed by 0/integer amounts). Tax columns are never followed by
+            # alphabetic text — the next product name is.
             sr_upc = list(re.finditer(
-                r'(?m)^\s*\d{1,3}\s*\n(?:\s*\d+\s*\n){2,5}',
+                r'(?m)^\s*\d{1,3}\s*\n(?:\s*\d+\s*\n){2,5}(?=\s*[A-Za-z])',
                 raw_name,
             ))
             if sr_upc:
